@@ -59,9 +59,10 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.ranger.admin.client.datatype.RESTResponse;
-import org.apache.ranger.authorization.hadoop.config.RangerConfiguration;
+import org.apache.ranger.authorization.hadoop.config.RangerAdminConfig;
 import org.apache.ranger.authorization.utils.StringUtil;
 import org.apache.ranger.biz.AssetMgr;
+import org.apache.ranger.biz.RangerPolicyAdmin;
 import org.apache.ranger.biz.RangerBizUtil;
 import org.apache.ranger.biz.RoleDBStore;
 import org.apache.ranger.biz.SecurityZoneDBStore;
@@ -82,6 +83,7 @@ import org.apache.ranger.common.ServiceUtil;
 import org.apache.ranger.common.UserSessionBase;
 import org.apache.ranger.common.db.RangerTransactionSynchronizationAdapter;
 import org.apache.ranger.db.RangerDaoManager;
+import org.apache.ranger.entity.XXPolicy;
 import org.apache.ranger.entity.XXPolicyExportAudit;
 import org.apache.ranger.entity.XXSecurityZone;
 import org.apache.ranger.entity.XXSecurityZoneRefService;
@@ -96,6 +98,7 @@ import org.apache.ranger.plugin.model.RangerPolicy.RangerPolicyItem;
 import org.apache.ranger.plugin.model.RangerPolicy.RangerPolicyItemAccess;
 import org.apache.ranger.plugin.model.RangerPolicy.RangerPolicyResource;
 import org.apache.ranger.plugin.model.RangerPolicyDelta;
+import org.apache.ranger.plugin.model.RangerPolicyResourceSignature;
 import org.apache.ranger.plugin.model.RangerSecurityZone;
 import org.apache.ranger.plugin.model.RangerService;
 import org.apache.ranger.plugin.model.RangerServiceDef;
@@ -107,8 +110,8 @@ import org.apache.ranger.plugin.model.validation.RangerValidator.Action;
 import org.apache.ranger.plugin.policyengine.RangerAccessResource;
 import org.apache.ranger.plugin.policyengine.RangerAccessResourceImpl;
 import org.apache.ranger.plugin.policyengine.RangerPolicyEngine;
-import org.apache.ranger.plugin.policyengine.RangerPolicyEngineCache;
-import org.apache.ranger.plugin.policyengine.RangerPolicyEngineCacheForEngineOptions;
+import org.apache.ranger.biz.RangerPolicyAdminCache;
+import org.apache.ranger.biz.RangerPolicyAdminCacheForEngineOptions;
 import org.apache.ranger.plugin.policyengine.RangerPolicyEngineOptions;
 import org.apache.ranger.plugin.service.ResourceLookupContext;
 import org.apache.ranger.plugin.store.EmbeddedServiceDefsUtil;
@@ -243,6 +246,7 @@ public class ServiceREST {
 	private RangerPolicyEngineOptions delegateAdminOptions;
 	private RangerPolicyEngineOptions policySearchAdminOptions;
 	private RangerPolicyEngineOptions defaultAdminOptions;
+	private final RangerAdminConfig   config = RangerAdminConfig.getInstance();
 
 	public ServiceREST() {
 	}
@@ -591,18 +595,18 @@ public class ServiceREST {
 				LOG.debug("getServicePolicies with service-name=" + service.getName());
 			}
 
-			RangerPolicyEngine engine = null;
+			RangerPolicyAdmin policyAdmin = null;
 
 			try {
-				engine = getPolicySearchPolicyEngine(service.getName());
+				policyAdmin = getPolicyAdminForSearch(service.getName());
 			} catch (Exception e) {
 				LOG.error("Cannot initialize Policy-Engine", e);
 				throw restErrorUtil.createRESTException("Cannot initialize Policy Engine",
 						MessageEnums.ERROR_SYSTEM);
 			}
 
-			if (engine != null) {
-				ret = engine.getMatchingPolicies(new RangerAccessResourceImpl(resource));
+			if (policyAdmin != null) {
+				ret = policyAdmin.getMatchingPolicies(new RangerAccessResourceImpl(resource));
 			}
 
 		}
@@ -743,12 +747,16 @@ public class ServiceREST {
 			}
                          bizUtil.blockAuditorRoleUser();
 
-			if (StringUtils.isBlank(service.getTagService()) && xxServiceDef != null && !StringUtils.equals(EmbeddedServiceDefsUtil.EMBEDDED_SERVICEDEF_TAG_NAME, xxServiceDef.getName())) {
+			if (StringUtils.isBlank(service.getTagService())
+					&& xxServiceDef != null
+					&& !StringUtils.equals(EmbeddedServiceDefsUtil.EMBEDDED_SERVICEDEF_TAG_NAME, xxServiceDef.getName())
+					&& !StringUtils.equals(EmbeddedServiceDefsUtil.EMBEDDED_SERVICEDEF_KMS_NAME , xxServiceDef.getName())) {
 				if (LOG.isDebugEnabled()) {
 					LOG.debug("Tag service may need to be created and linked with this service:[" + service.getName() + "]");
 				}
 				scheduleCreateOrGetTagService(service);
 			}
+
 			ret = svcStore.createService(service);
 		} catch(WebApplicationException excp) {
 			throw excp;
@@ -1258,35 +1266,40 @@ public class ServiceREST {
 						perf = RangerPerfTracer.getPerfTracer(PERF_LOG, "ServiceREST.grantAccess(serviceName=" + serviceName + ")");
 					}
 
-					validateGrantRevokeRequest(grantRequest);
+					// This is an open API - dont care about who calls it. Caller is treated as privileged user
+					boolean hasAdminPrivilege = true;
+					String loggedInUser = null;
+					validateGrantRevokeRequest(grantRequest, hasAdminPrivilege, loggedInUser);
+
 					String               userName   = grantRequest.getGrantor();
 					Set<String>          userGroups = CollectionUtils.isNotEmpty(grantRequest.getGrantorGroups()) ? grantRequest.getGrantorGroups() : userMgr.getGroupsForUser(userName);
 					String				 ownerUser  = grantRequest.getOwnerUser();
 					RangerAccessResource resource   = new RangerAccessResourceImpl(StringUtil.toStringObjectMap(grantRequest.getResource()), ownerUser);
-                                        VXUser vxUser = xUserService.getXUserByUserName(userName);
-                                        if(vxUser.getUserRoleList().contains(RangerConstants.ROLE_ADMIN_AUDITOR) || vxUser.getUserRoleList().contains(RangerConstants.ROLE_KEY_ADMIN_AUDITOR)){
-                                                 VXResponse vXResponse = new VXResponse();
-                         vXResponse.setStatusCode(HttpServletResponse.SC_UNAUTHORIZED);
-                         vXResponse.setMsgDesc("Operation"
-                                         + " denied. LoggedInUser="
-                                         +  vxUser.getId()
-                                         + " ,isn't permitted to perform the action.");
-                         throw restErrorUtil.generateRESTException(vXResponse);
-                                        }
-					boolean isAdmin = hasAdminAccess(serviceName, userName, userGroups, resource);
+					VXUser               vxUser = xUserService.getXUserByUserName(userName);
+
+					if (vxUser.getUserRoleList().contains(RangerConstants.ROLE_ADMIN_AUDITOR) || vxUser.getUserRoleList().contains(RangerConstants.ROLE_KEY_ADMIN_AUDITOR)) {
+						VXResponse vXResponse = new VXResponse();
+						vXResponse.setStatusCode(HttpServletResponse.SC_UNAUTHORIZED);
+						vXResponse.setMsgDesc("Operation denied. LoggedInUser=" + vxUser.getId() + " is not permitted to perform the action.");
+						throw restErrorUtil.generateRESTException(vXResponse);
+					}
+					RangerService rangerService = svcStore.getServiceByName(serviceName);
+
+					String zoneName = getRangerAdminZoneName(serviceName, grantRequest);
+					boolean isAdmin = bizUtil.isUserRangerAdmin(userName) || bizUtil.isUserServiceAdmin(rangerService, userName) || hasAdminAccess(serviceName, zoneName, userName, userGroups, resource);
 
 					if(!isAdmin) {
 						throw restErrorUtil.createGrantRevokeRESTException( "User doesn't have necessary permission to grant access");
 					}
 
-					RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, userName);
+					RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, zoneName, userName);
 	
 					if(policy != null) {
 						boolean policyUpdated = false;
 						policyUpdated = ServiceRESTUtil.processGrantRequest(policy, grantRequest);
 	
 						if(policyUpdated) {
-							policy.setZoneName(grantRequest.getZoneName());
+							policy.setZoneName(zoneName);
 							svcStore.updatePolicy(policy);
 						} else {
 							LOG.error("processGrantRequest processing failed");
@@ -1325,7 +1338,7 @@ public class ServiceREST {
 						}
 	
 						policy.getPolicyItems().add(policyItem);
-						policy.setZoneName(grantRequest.getZoneName());
+						policy.setZoneName(zoneName);
 
 						svcStore.createPolicy(policy);
 					}
@@ -1358,51 +1371,50 @@ public class ServiceREST {
 		}
 		RESTResponse     ret  = new RESTResponse();
 		RangerPerfTracer perf = null;
-		boolean isAllowed = false;
-		boolean isKeyAdmin = bizUtil.isKeyAdmin();
-                bizUtil.blockAuditorRoleUser();
-		if(grantRequest!=null){
+		bizUtil.blockAuditorRoleUser();
+
+		if(grantRequest != null) {
 			if (serviceUtil.isValidService(serviceName, request)) {
 				try {
 					if(RangerPerfTracer.isPerfTraceEnabled(PERF_LOG)) {
 						perf = RangerPerfTracer.getPerfTracer(PERF_LOG, "ServiceREST.scureGrantAccess(serviceName=" + serviceName + ")");
 					}
 
-					validateGrantRevokeRequest(grantRequest);
-
-					String               userName   = grantRequest.getGrantor();
-					Set<String>          userGroups = CollectionUtils.isNotEmpty(grantRequest.getGrantorGroups()) ? grantRequest.getGrantorGroups() : userMgr.getGroupsForUser(userName);
-					String				 ownerUser  = grantRequest.getOwnerUser();
-					RangerAccessResource resource   = new RangerAccessResourceImpl(StringUtil.toStringObjectMap(grantRequest.getResource()), ownerUser);
-					boolean isAdmin = hasAdminAccess(serviceName, userName, userGroups, resource);
-
 					XXService xService = daoManager.getXXService().findByName(serviceName);
 					XXServiceDef xServiceDef = daoManager.getXXServiceDef().getById(xService.getType());
 					RangerService rangerService = svcStore.getServiceByName(serviceName);
 
+					String  loggedInUser      = bizUtil.getCurrentUserLoginId();
+					boolean hasAdminPrivilege = bizUtil.isAdmin() || bizUtil.isUserServiceAdmin(rangerService, loggedInUser) || bizUtil.isUserAllowedForGrantRevoke(rangerService, loggedInUser);
+
+					validateGrantRevokeRequest(grantRequest, hasAdminPrivilege, loggedInUser);
+
+					String               userName   = grantRequest.getGrantor();
+					Set<String>          userGroups = grantRequest.getGrantorGroups();
+					String				 ownerUser  = grantRequest.getOwnerUser();
+
+					RangerAccessResource resource   = new RangerAccessResourceImpl(StringUtil.toStringObjectMap(grantRequest.getResource()), ownerUser);
+					String               zoneName   = getRangerAdminZoneName(serviceName, grantRequest);
+
+					boolean isAllowed = false;
+
 					if (StringUtils.equals(xServiceDef.getImplclassname(), EmbeddedServiceDefsUtil.KMS_IMPL_CLASS_NAME)) {
-						if (isKeyAdmin) {
-							isAllowed = true;
-						}else {
-							isAllowed = bizUtil.isUserAllowedForGrantRevoke(rangerService, Allowed_User_List_For_Grant_Revoke, userName);
-						}
-					}else{
-						if (isAdmin) {
+						if (bizUtil.isKeyAdmin() || bizUtil.isUserAllowedForGrantRevoke(rangerService, loggedInUser)) {
 							isAllowed = true;
 						}
-						else{
-							isAllowed = bizUtil.isUserAllowedForGrantRevoke(rangerService, Allowed_User_List_For_Grant_Revoke, userName);
-						}
+					} else {
+						isAllowed = bizUtil.isUserRangerAdmin(userName) || bizUtil.isUserServiceAdmin(rangerService, userName) || hasAdminAccess(serviceName, zoneName, userName, userGroups, resource);
 					}
+
 					if (isAllowed) {
-						RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, userName);
+						RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, zoneName, userName);
 
 						if(policy != null) {
 							boolean policyUpdated = false;
 							policyUpdated = ServiceRESTUtil.processGrantRequest(policy, grantRequest);
 
 							if(policyUpdated) {
-								policy.setZoneName(grantRequest.getZoneName());
+								policy.setZoneName(zoneName);
 								svcStore.updatePolicy(policy);
 							} else {
 								LOG.error("processSecureGrantRequest processing failed");
@@ -1441,7 +1453,7 @@ public class ServiceREST {
 							}
 
 							policy.getPolicyItems().add(policyItem);
-							policy.setZoneName(grantRequest.getZoneName());
+							policy.setZoneName(zoneName);
 
 							svcStore.createPolicy(policy);
 						}
@@ -1488,36 +1500,40 @@ public class ServiceREST {
 						perf = RangerPerfTracer.getPerfTracer(PERF_LOG, "ServiceREST.revokeAccess(serviceName=" + serviceName + ")");
 					}
 
-					validateGrantRevokeRequest(revokeRequest);
+					// This is an open API - dont care about who calls it. Caller is treated as privileged user
+					boolean hasAdminPrivilege = true;
+					String loggedInUser = null;
+					validateGrantRevokeRequest(revokeRequest, hasAdminPrivilege, loggedInUser);
 
 					String               userName   = revokeRequest.getGrantor();
 					Set<String>          userGroups = CollectionUtils.isNotEmpty(revokeRequest.getGrantorGroups()) ? revokeRequest.getGrantorGroups() : userMgr.getGroupsForUser(userName);
 					String				 ownerUser  = revokeRequest.getOwnerUser();
 					RangerAccessResource resource   = new RangerAccessResourceImpl(StringUtil.toStringObjectMap(revokeRequest.getResource()), ownerUser);
-                                        VXUser vxUser = xUserService.getXUserByUserName(userName);
-                                        if(vxUser.getUserRoleList().contains(RangerConstants.ROLE_ADMIN_AUDITOR) || vxUser.getUserRoleList().contains(RangerConstants.ROLE_KEY_ADMIN_AUDITOR)){
-                                                 VXResponse vXResponse = new VXResponse();
-                         vXResponse.setStatusCode(HttpServletResponse.SC_UNAUTHORIZED);
-                         vXResponse.setMsgDesc("Operation"
-                                         + " denied. LoggedInUser="
-                                         +  vxUser.getId()
-                                         + " ,isn't permitted to perform the action.");
-                         throw restErrorUtil.generateRESTException(vXResponse);
-                                        }
-					boolean isAdmin = hasAdminAccess(serviceName, userName, userGroups, resource);
+					VXUser vxUser = xUserService.getXUserByUserName(userName);
+
+					if (vxUser.getUserRoleList().contains(RangerConstants.ROLE_ADMIN_AUDITOR) || vxUser.getUserRoleList().contains(RangerConstants.ROLE_KEY_ADMIN_AUDITOR)) {
+						VXResponse vXResponse = new VXResponse();
+						vXResponse.setStatusCode(HttpServletResponse.SC_UNAUTHORIZED);
+						vXResponse.setMsgDesc("Operation denied. LoggedInUser=" + vxUser.getId() + " is not permitted to perform the action.");
+						throw restErrorUtil.generateRESTException(vXResponse);
+					}
+					RangerService rangerService = svcStore.getServiceByName(serviceName);
+					String        zoneName      = getRangerAdminZoneName(serviceName, revokeRequest);
+
+					boolean isAdmin = bizUtil.isUserRangerAdmin(userName) || bizUtil.isUserServiceAdmin(rangerService, userName) || hasAdminAccess(serviceName, zoneName, userName, userGroups, resource);
 
 					if(!isAdmin) {
 						throw restErrorUtil.createGrantRevokeRESTException("User doesn't have necessary permission to revoke access");
 					}
 
-					RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, userName);
+					RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, zoneName, userName);
 
 					if(policy != null) {
 						boolean policyUpdated = false;
 						policyUpdated = ServiceRESTUtil.processRevokeRequest(policy, revokeRequest);
 
 						if(policyUpdated) {
-							policy.setZoneName(revokeRequest.getZoneName());
+							policy.setZoneName(zoneName);
 							svcStore.updatePolicy(policy);
 						} else {
 							LOG.error("processRevokeRequest processing failed");
@@ -1553,51 +1569,51 @@ public class ServiceREST {
 		}
 		RESTResponse     ret  = new RESTResponse();
 		RangerPerfTracer perf = null;
-		if(revokeRequest!=null){
+		bizUtil.blockAuditorRoleUser();
+
+		if (revokeRequest != null) {
 			if (serviceUtil.isValidService(serviceName,request)) {
 				try {
 					if(RangerPerfTracer.isPerfTraceEnabled(PERF_LOG)) {
 						perf = RangerPerfTracer.getPerfTracer(PERF_LOG, "ServiceREST.secureRevokeAccess(serviceName=" + serviceName + ")");
 					}
 
-					validateGrantRevokeRequest(revokeRequest);
-
-					String               userName   = revokeRequest.getGrantor();
-					Set<String>          userGroups = CollectionUtils.isNotEmpty(revokeRequest.getGrantorGroups()) ? revokeRequest.getGrantorGroups() : userMgr.getGroupsForUser(userName);
-					String				 ownerUser  = revokeRequest.getOwnerUser();
-					RangerAccessResource resource   = new RangerAccessResourceImpl(StringUtil.toStringObjectMap(revokeRequest.getResource()), ownerUser);
-					boolean isAdmin = hasAdminAccess(serviceName, userName, userGroups, resource);
-					boolean isAllowed = false;
-					boolean isKeyAdmin = bizUtil.isKeyAdmin();
-                                        bizUtil.blockAuditorRoleUser();
 					XXService xService = daoManager.getXXService().findByName(serviceName);
 					XXServiceDef xServiceDef = daoManager.getXXServiceDef().getById(xService.getType());
 					RangerService rangerService = svcStore.getServiceByName(serviceName);
 
+					String  loggedInUser      = bizUtil.getCurrentUserLoginId();
+					boolean hasAdminPrivilege = bizUtil.isAdmin() || bizUtil.isUserServiceAdmin(rangerService, loggedInUser) || bizUtil.isUserAllowedForGrantRevoke(rangerService, loggedInUser);
+
+					validateGrantRevokeRequest(revokeRequest, hasAdminPrivilege, loggedInUser);
+
+					String userName = revokeRequest.getGrantor();
+					Set<String> userGroups = revokeRequest.getGrantorGroups();
+					String ownerUser = revokeRequest.getOwnerUser();
+
+					RangerAccessResource resource = new RangerAccessResourceImpl(StringUtil.toStringObjectMap(revokeRequest.getResource()), ownerUser);
+					String               zoneName = getRangerAdminZoneName(serviceName, revokeRequest);
+
+
+					boolean isAllowed = false;
+
 					if (StringUtils.equals(xServiceDef.getImplclassname(), EmbeddedServiceDefsUtil.KMS_IMPL_CLASS_NAME)) {
-						if (isKeyAdmin) {
-							isAllowed = true;
-						}else {
-							isAllowed = bizUtil.isUserAllowedForGrantRevoke(rangerService, Allowed_User_List_For_Grant_Revoke, userName);
-						}
-					}else{
-						if (isAdmin) {
+						if (bizUtil.isKeyAdmin() || bizUtil.isUserAllowedForGrantRevoke(rangerService, loggedInUser)) {
 							isAllowed = true;
 						}
-						else{
-							isAllowed = bizUtil.isUserAllowedForGrantRevoke(rangerService, Allowed_User_List_For_Grant_Revoke, userName);
-						}
+					} else {
+						isAllowed = bizUtil.isUserRangerAdmin(userName) || bizUtil.isUserServiceAdmin(rangerService, userName) || hasAdminAccess(serviceName, zoneName, userName, userGroups, resource);
 					}
 
 					if (isAllowed) {
-						RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, userName);
+						RangerPolicy policy = getExactMatchPolicyForResource(serviceName, resource, zoneName, userName);
 
 						if(policy != null) {
 							boolean policyUpdated = false;
 							policyUpdated = ServiceRESTUtil.processRevokeRequest(policy, revokeRequest);
 
 							if(policyUpdated) {
-								policy.setZoneName(revokeRequest.getZoneName());
+								policy.setZoneName(zoneName);
 								svcStore.updatePolicy(policy);
 							} else {
 								LOG.error("processSecureRevokeRequest processing failed");
@@ -1634,7 +1650,6 @@ public class ServiceREST {
 		if(LOG.isDebugEnabled()) {
 			LOG.debug("==> ServiceREST.createPolicy(" + policy + ")");
 		}
-
 		RangerPolicy     ret  = null;
 		RangerPerfTracer perf = null;
 
@@ -1650,51 +1665,12 @@ public class ServiceREST {
 					deleteExactMatchPolicyForResource(policies, request.getRemoteUser(), null);
 				}
 				boolean updateIfExists=("true".equalsIgnoreCase(StringUtils.trimToEmpty(request.getParameter(PARAM_UPDATE_IF_EXISTS)))) ? true : false ;
-				if(updateIfExists) {
-					RangerPolicy existingPolicy = null;
-					String serviceName = request.getParameter(PARAM_SERVICE_NAME);
-					if (serviceName == null) {
-						serviceName = (String) request.getAttribute(PARAM_SERVICE_NAME);
-					}
-					if(StringUtils.isNotEmpty(serviceName)) {
-						policy.setService(serviceName);
-					}
-					String policyName = request.getParameter(PARAM_POLICY_NAME);
-					if (policyName == null) {
-						policyName = (String) request.getAttribute(PARAM_POLICY_NAME);
-					}
-					if(StringUtils.isNotEmpty(policyName)) {
-						policy.setName(StringUtils.trim(policyName));
-					}
-					if (StringUtils.isNotEmpty(serviceName) && StringUtils.isNotEmpty(policyName)) {
-						String zoneName = request.getParameter(PARAM_ZONE_NAME);
-						if(StringUtils.isBlank(zoneName)) {
-							zoneName = (String) request.getAttribute(PARAM_ZONE_NAME);
-						}
-						if (StringUtils.isNotBlank(zoneName)) {
-							policy.setZoneName(StringUtils.trim(zoneName));
-						}
-						if (StringUtils.isNotBlank(zoneName)) {
-							existingPolicy = getPolicyByNameAndZone(policy.getService(), policy.getName(), policy.getZoneName());
-							if(existingPolicy==null) {
-								existingPolicy = getPolicyByGuid(policy.getGuid(), policy.getService(), policy.getZoneName());
-							}
-						} else {
-							existingPolicy = getPolicyByName(policy.getService(), policy.getName());
-							if(existingPolicy==null) {
-								existingPolicy = getPolicyByGuid(policy.getGuid(), policy.getService(), null);
-							}
-						}
-					}
-					try {
-						if (existingPolicy != null) {
-							policy.setId(existingPolicy.getId());
-							ret = updatePolicy(policy);
-						}
-					} catch (Exception excp){
-						LOG.error("updatePolicy(" + policy + ") failed", excp);
-						throw restErrorUtil.createRESTException(excp.getMessage());
-					}
+				boolean mergeIfExists  = "true".equalsIgnoreCase(StringUtils.trimToEmpty(request.getParameter(PARAM_MERGE_IF_EXISTS)))  ? true : false;
+				if (mergeIfExists && updateIfExists) {
+					LOG.warn("Cannot use both updateIfExists and mergeIfExists for a createPolicy. mergeIfExists will override updateIfExists for policy :[" + policy.getName() + "]");
+				}
+				if (mergeIfExists || updateIfExists) {
+					ret = applyPolicy(policy, request);
 				}
 			}
 
@@ -1755,21 +1731,36 @@ public class ServiceREST {
 		RangerPolicy ret = null;
 
 		if (policy != null && StringUtils.isNotBlank(policy.getService())) {
+
 			try {
-				// Check if applied policy contains any conditions
-				if (ServiceRESTUtil.containsRangerCondition(policy)) {
-					LOG.error("Applied policy contains condition(s); not supported:" + policy);
-					throw new Exception("Applied policy contains condition(s); not supported:" + policy);
+
+				final              RangerPolicy existingPolicy;
+				String             signature                     = (new RangerPolicyResourceSignature(policy)).getSignature();
+				List<RangerPolicy> policiesWithMatchingSignature = svcStore.getPoliciesByResourceSignature(policy.getService(), signature, true);
+
+				if (CollectionUtils.isNotEmpty(policiesWithMatchingSignature)) {
+					if (policiesWithMatchingSignature.size() == 1) {
+						existingPolicy = policiesWithMatchingSignature.get(0);
+					} else {
+						throw new Exception("Multiple policies with matching policy-signature are found. Cannot determine target for applying policy");
+					}
+				} else {
+					existingPolicy = null;
 				}
-
-				String user = request.getRemoteUser();
-				RangerPolicy existingPolicy = getExactMatchPolicyForResource(policy, StringUtils.isNotBlank(user) ? user :"admin");
-
+				boolean mergeIfExists  = "true".equalsIgnoreCase(StringUtils.trimToEmpty(request.getParameter(PARAM_MERGE_IF_EXISTS)))  ? true : false;
 				if (existingPolicy == null) {
+					if (StringUtils.isNotEmpty(policy.getName())) {
+						XXPolicy dbPolicy = daoManager.getXXPolicy().findByPolicyName(policy.getName());
+						if (dbPolicy != null) {
+							policy.setName(policy.getName() + System.currentTimeMillis());
+						}
+					}
+
 					ret = createPolicy(policy, null);
 				} else {
-					ServiceRESTUtil.processApplyPolicy(existingPolicy, policy);
-
+					if(mergeIfExists) {
+						ServiceRESTUtil.processApplyPolicy(existingPolicy, policy);
+					}
 					ret = updatePolicy(existingPolicy);
 				}
 			} catch(WebApplicationException excp) {
@@ -1796,7 +1787,6 @@ public class ServiceREST {
 		if(LOG.isDebugEnabled()) {
 			LOG.debug("==> ServiceREST.updatePolicy(" + policy + ")");
 		}
-
 		RangerPolicy ret  = null;
 		RangerPerfTracer perf = null;
 
@@ -2260,7 +2250,9 @@ public class ServiceREST {
 										if (CollectionUtils.isNotEmpty(serviceNameList) && serviceNameList.contains(serviceName) && !sourceServices.contains(serviceName) && !destinationServices.contains(serviceName)) {
 											sourceServices.add(serviceName);
 											destinationServices.add(serviceName);
-										} else if (CollectionUtils.isEmpty(serviceNameList) && !sourceServices.contains(serviceName) && !destinationServices.contains(serviceName)) {
+										} else if (CollectionUtils.isEmpty(serviceNameList)
+												&& !sourceServices.contains(serviceName)
+												&& !destinationServices.contains(serviceName)) {
 											sourceServices.add(serviceName);
 											destinationServices.add(serviceName);
 										}
@@ -2301,6 +2293,7 @@ public class ServiceREST {
 					if (updateIfExists) {
 						isOverride = false;
 					}
+
 					String destinationZoneName = getDestinationZoneName(destinationZones,zoneNameInJson);
 					if (deleteIfExists) {
 						deleteExactMatchPolicyForResource(policies, request.getRemoteUser(), destinationZoneName);
@@ -2476,7 +2469,7 @@ public class ServiceREST {
 						}
 					}
 				}
-				if(totalPolicyCreate % RangerBizUtil.batchSize == 0) {
+				if(totalPolicyCreate % RangerBizUtil.policyBatchSize == 0) {
 					bizUtil.bulkModeOnlyFlushAndClear();
 				}
 			}
@@ -2747,7 +2740,7 @@ public class ServiceREST {
 									bizUtil.blockAuditorRoleUser();
 									svcStore.deletePolicy(rangerPolicy, service);
 									totalDeletedPolicies = totalDeletedPolicies + 1;
-									if (totalDeletedPolicies % RangerBizUtil.batchSize == 0) {
+									if (totalDeletedPolicies % RangerBizUtil.policyBatchSize == 0) {
 										bizUtil.bulkModeOnlyFlushAndClear();
 									}
 									if (LOG.isDebugEnabled()) {
@@ -2820,7 +2813,7 @@ public class ServiceREST {
 										LOG.debug("Policy " + rangerPolicy.getName() + " deleted successfully.");
 									}
 									totalDeletedPolicies = totalDeletedPolicies + 1;
-									if (totalDeletedPolicies % RangerBizUtil.batchSize == 0) {
+									if (totalDeletedPolicies % RangerBizUtil.policyBatchSize == 0) {
 										bizUtil.bulkModeOnlyFlushAndClear();
 									}
 								}
@@ -3085,7 +3078,7 @@ public class ServiceREST {
 					Map<String, RangerSecurityZone.RangerSecurityZoneService> securityZones = zoneStore.getSecurityZonesForService(serviceName);
 					ServicePolicies updatedServicePolicies = servicePolicies;
 					if (MapUtils.isNotEmpty(securityZones)) {
-						updatedServicePolicies = RangerPolicyEngineCache.getUpdatedServicePoliciesForZones(servicePolicies, securityZones);
+						updatedServicePolicies = RangerPolicyAdminCache.getUpdatedServicePoliciesForZones(servicePolicies, securityZones);
 						patchAssociatedTagServiceInSecurityZoneInfos(updatedServicePolicies);
 					}
 					downloadedVersion = updatedServicePolicies.getPolicyVersion();
@@ -3094,7 +3087,7 @@ public class ServiceREST {
 					} else {
 						ret = updatedServicePolicies;
 					}
-
+					ret.setServiceConfig(svcStore.getServiceConfigForPlugin(ret.getServiceId()));
 					httpCode = HttpServletResponse.SC_OK;
 					logMsg = "Returning " + (ret.getPolicies() != null ? ret.getPolicies().size() : (ret.getPolicyDeltas() != null ? ret.getPolicyDeltas().size() : 0)) + " policies. Policy version=" + ret.getPolicyVersion();
 				}
@@ -3207,7 +3200,7 @@ public class ServiceREST {
 						Map<String, RangerSecurityZone.RangerSecurityZoneService> securityZones = zoneStore.getSecurityZonesForService(serviceName);
 						ServicePolicies updatedServicePolicies = servicePolicies;
 						if (MapUtils.isNotEmpty(securityZones)) {
-							updatedServicePolicies = RangerPolicyEngineCache.getUpdatedServicePoliciesForZones(servicePolicies, securityZones);
+							updatedServicePolicies = RangerPolicyAdminCache.getUpdatedServicePoliciesForZones(servicePolicies, securityZones);
 							patchAssociatedTagServiceInSecurityZoneInfos(updatedServicePolicies);
 						}
 						downloadedVersion = updatedServicePolicies.getPolicyVersion();
@@ -3216,6 +3209,7 @@ public class ServiceREST {
 						} else {
 							ret = updatedServicePolicies;
 						}
+						ret.setServiceConfig(svcStore.getServiceConfigForPlugin(ret.getServiceId()));
 						httpCode = HttpServletResponse.SC_OK;
 						logMsg = "Returning " + (ret.getPolicies() != null ? ret.getPolicies().size() : (ret.getPolicyDeltas() != null ? ret.getPolicyDeltas().size() : 0)) + " policies. Policy version=" + ret.getPolicyVersion();
 					}
@@ -3284,15 +3278,14 @@ public class ServiceREST {
 		}
 	}
 
-	private RangerPolicy getExactMatchPolicyForResource(String serviceName, RangerAccessResource resource, String user) throws Exception {
+	private RangerPolicy getExactMatchPolicyForResource(String serviceName, RangerAccessResource resource, String zoneName, String user) throws Exception {
 		if(LOG.isDebugEnabled()) {
-			LOG.debug("==> ServiceREST.getExactMatchPolicyForResource(" + resource + ", " + user + ")");
+			LOG.debug("==> ServiceREST.getExactMatchPolicyForResource(" + resource + ", " + zoneName + ", " + user + ")");
 		}
 
-		RangerPolicy       ret          = null;
-		RangerPolicyEngine policyEngine = getPolicyEngine(serviceName);
-
-		List<RangerPolicy> policies     = policyEngine != null ? policyEngine.getExactMatchPolicies(resource, null) : null;
+		RangerPolicy       ret         = null;
+		RangerPolicyAdmin  policyAdmin = getPolicyAdmin(serviceName);
+		List<RangerPolicy> policies    = policyAdmin != null ? policyAdmin.getExactMatchPolicies(resource, zoneName, null) : null;
 
 		if(CollectionUtils.isNotEmpty(policies)) {
 			// at this point, ret is a policy in policy-engine; the caller might update the policy (for grant/revoke); so get a copy from the store
@@ -3300,7 +3293,7 @@ public class ServiceREST {
 		}
 
 		if(LOG.isDebugEnabled()) {
-			LOG.debug("<== ServiceREST.getExactMatchPolicyForResource(" + resource + ", " + user + "): " + ret);
+			LOG.debug("<== ServiceREST.getExactMatchPolicyForResource(" + resource + ", " + zoneName + ", " + user + "): " + ret);
 		}
 
 		return ret;
@@ -3311,10 +3304,9 @@ public class ServiceREST {
 			LOG.debug("==> ServiceREST.getExactMatchPolicyForResource(" + policy + ", " + user + ")");
 		}
 
-		RangerPolicy       ret          = null;
-		RangerPolicyEngine policyEngine = getPolicyEngine(policy.getService());
-
-		List<RangerPolicy> policies     = policyEngine != null ? policyEngine.getExactMatchPolicies(policy, null) : null;
+		RangerPolicy       ret         = null;
+		RangerPolicyAdmin  policyAdmin = getPolicyAdmin(policy.getService());
+		List<RangerPolicy> policies    = policyAdmin != null ? policyAdmin.getExactMatchPolicies(policy, null) : null;
 
 		if(CollectionUtils.isNotEmpty(policies)) {
 			// at this point, ret is a policy in policy-engine; the caller might update the policy (for grant/revoke); so get a copy from the store
@@ -3464,74 +3456,6 @@ public class ServiceREST {
 		return ret;
 	}
 
-	private RangerPolicy getPolicyByGuid(String guid, String serviceName, String zoneName) {
-		RangerPolicy ret = null;
-
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("==> ServiceREST.getPolicyByGuid(" + guid +")");
-		}
-
-		SearchFilter filter = new SearchFilter();
-		filter.setParam(SearchFilter.GUID, guid);
-		filter.setParam(SearchFilter.SERVICE_NAME, serviceName);
-		if(StringUtils.isNotEmpty(zoneName)) {
-			filter.setParam(SearchFilter.ZONE_NAME, zoneName);
-		}
-		List<RangerPolicy> policies = getPolicies(filter);
-
-		if (CollectionUtils.isNotEmpty(policies)) {
-			ret = policies.get(0);
-		}
-
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("<== ServiceREST.getPolicyByGuid(" + guid + ")" + ret);
-		}
-		return ret;
-	}
-
-	private RangerPolicy getPolicyByName(String serviceName,String policyName) {
-		RangerPolicy ret = null;
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("==> ServiceREST.getPolicyByName(" + serviceName + "," + policyName + ")");
-		}
-
-		SearchFilter filter = new SearchFilter();
-		filter.setParam(SearchFilter.SERVICE_NAME, serviceName);
-		filter.setParam(SearchFilter.POLICY_NAME, policyName);
-		List<RangerPolicy> policies = getPolicies(filter);
-
-		if (CollectionUtils.isNotEmpty(policies)) {
-			ret = policies.get(0);
-		}
-
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("<== ServiceREST.getPolicyByName(" + serviceName + "," + policyName + ")" + ret);
-		}
-		return ret;
-	}
-
-	private RangerPolicy getPolicyByNameAndZone(String serviceName, String policyName, String zoneName) {
-		RangerPolicy ret = null;
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("==> ServiceREST.getPolicyByNameAndZone(" + serviceName + "," + policyName + "," + zoneName + ")");
-		}
-
-		SearchFilter filter = new SearchFilter();
-		filter.setParam(SearchFilter.SERVICE_NAME, serviceName);
-		filter.setParam(SearchFilter.POLICY_NAME, policyName);
-		filter.setParam(SearchFilter.ZONE_NAME, zoneName);
-		List<RangerPolicy> policies = getPolicies(filter);
-
-		if (CollectionUtils.isNotEmpty(policies) && policies.size()==1) {
-			ret = policies.get(0);
-		}
-
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("<== ServiceREST.getPolicyByNameAndZone(" + serviceName + "," + policyName + "," + zoneName + ")");
-		}
-		return ret;
-	}
-
 	private List<RangerPolicy> applyAdminAccessFilter(List<RangerPolicy> policies) {
 		List<RangerPolicy> ret = new ArrayList<RangerPolicy>();
 		RangerPerfTracer  perf = null;
@@ -3598,16 +3522,17 @@ public class ServiceREST {
 						continue;
 					}
 
-					RangerPolicyEngine policyEngine = getDelegatedAdminPolicyEngine(serviceName);
+					RangerPolicyAdmin policyAdmin = getPolicyAdminForDelegatedAdmin(serviceName);
 
-					if (policyEngine != null) {
+					if (policyAdmin != null) {
 						if(userGroups == null) {
 							userGroups = daoManager.getXXGroupUser().findGroupNamesByUserName(userName);
 						}
-						Set<String> roles = policyEngine.getRolesFromUserAndGroups(userName, userGroups);
+
+						Set<String> roles = policyAdmin.getRolesFromUserAndGroups(userName, userGroups);
 
 						for (RangerPolicy policy : listToFilter) {
-							if (policyEngine.isAccessAllowed(policy, userName, userGroups, roles, RangerPolicyEngine.ADMIN_ACCESS) 
+							if (policyAdmin.isAccessAllowed(policy, userName, userGroups, roles, RangerPolicyEngine.ADMIN_ACCESS)
 									|| (!StringUtils.isEmpty(policy.getZoneName()) && (serviceMgr.isZoneAdmin(policy.getZoneName()) || serviceMgr.isZoneAuditor(policy.getZoneName())))
 									|| isServiceAdminUser) {
 								ret.add(policy);
@@ -3674,7 +3599,7 @@ public class ServiceREST {
 
 		final String propertyPrefix = "ranger.admin";
 
-		opts.configureDelegateAdmin(RangerConfiguration.getInstance(), propertyPrefix);
+		opts.configureDelegateAdmin(config, propertyPrefix);
 
 		return opts;
 	}
@@ -3684,7 +3609,7 @@ public class ServiceREST {
 
 		final String propertyPrefix = "ranger.admin";
 
-		opts.configureRangerAdminForPolicySearch(RangerConfiguration.getInstance(), propertyPrefix);
+		opts.configureRangerAdminForPolicySearch(config, propertyPrefix);
 		return opts;
 	}
 
@@ -3693,44 +3618,44 @@ public class ServiceREST {
 
 		final String propertyPrefix = "ranger.admin";
 
-		opts.configureDefaultRangerAdmin(RangerConfiguration.getInstance(), propertyPrefix);
+		opts.configureDefaultRangerAdmin(config, propertyPrefix);
 		return opts;
 	}
 
 	private boolean hasAdminAccess(RangerPolicy policy, String userName, Set<String> userGroups) {
-		boolean isAllowed = false;
+		boolean           isAllowed   = false;
+		RangerPolicyAdmin policyAdmin = getPolicyAdminForDelegatedAdmin(policy.getService());
 
-		RangerPolicyEngine policyEngine = getDelegatedAdminPolicyEngine(policy.getService());
+		if(policyAdmin != null) {
+			Set<String> roles = policyAdmin.getRolesFromUserAndGroups(userName, userGroups);
 
-		if(policyEngine != null) {
-			Set<String> roles = policyEngine.getRolesFromUserAndGroups(userName, userGroups);
-			isAllowed = policyEngine.isAccessAllowed(policy, userName, userGroups, roles, RangerPolicyEngine.ADMIN_ACCESS);
+			isAllowed = policyAdmin.isAccessAllowed(policy, userName, userGroups, roles, RangerPolicyEngine.ADMIN_ACCESS);
 		}
 
 		return isAllowed;
 	}
-	private boolean hasAdminAccess(String serviceName, String userName, Set<String> userGroups, RangerAccessResource resource) {
+	private boolean hasAdminAccess(String serviceName, String zoneName, String userName, Set<String> userGroups, RangerAccessResource resource) {
 		boolean isAllowed = false;
 
-		RangerPolicyEngine policyEngine = getDelegatedAdminPolicyEngine(serviceName);
+		RangerPolicyAdmin policyAdmin = getPolicyAdminForDelegatedAdmin(serviceName);
 
-		if(policyEngine != null) {
-			isAllowed = policyEngine.isAccessAllowed(resource, userName, userGroups, RangerPolicyEngine.ADMIN_ACCESS);
+		if(policyAdmin != null) {
+			isAllowed = policyAdmin.isAccessAllowed(resource, zoneName, userName, userGroups, RangerPolicyEngine.ADMIN_ACCESS);
 		}
 
 		return isAllowed;
 	}
 
-	public RangerPolicyEngine getDelegatedAdminPolicyEngine(String serviceName) {
-		return RangerPolicyEngineCacheForEngineOptions.getInstance().getPolicyEngine(serviceName, svcStore, roleDBStore, delegateAdminOptions);
+	public RangerPolicyAdmin getPolicyAdminForDelegatedAdmin(String serviceName) {
+		return RangerPolicyAdminCacheForEngineOptions.getInstance().getServicePoliciesAdmin(serviceName, svcStore, zoneStore, roleDBStore, delegateAdminOptions);
 	}
 
-	private RangerPolicyEngine getPolicySearchPolicyEngine(String serviceName) throws Exception {
-		return RangerPolicyEngineCacheForEngineOptions.getInstance().getPolicyEngine(serviceName, svcStore, roleDBStore, policySearchAdminOptions);
+	private RangerPolicyAdmin getPolicyAdminForSearch(String serviceName) {
+		return RangerPolicyAdminCacheForEngineOptions.getInstance().getServicePoliciesAdmin(serviceName, svcStore, zoneStore, roleDBStore, policySearchAdminOptions);
 	}
 
-	private RangerPolicyEngine getPolicyEngine(String serviceName) throws Exception {
-		return RangerPolicyEngineCacheForEngineOptions.getInstance().getPolicyEngine(serviceName, svcStore, roleDBStore, defaultAdminOptions);
+	private RangerPolicyAdmin getPolicyAdmin(String serviceName) {
+		return RangerPolicyAdminCacheForEngineOptions.getInstance().getServicePoliciesAdmin(serviceName, svcStore, zoneStore,roleDBStore, defaultAdminOptions);
 	}
 
 	@GET
@@ -3915,13 +3840,20 @@ public class ServiceREST {
 		return ret;
 	}
 
-	private void validateGrantRevokeRequest(GrantRevokeRequest request){
-		if( request!=null){
+	private void validateGrantRevokeRequest(GrantRevokeRequest request, final boolean hasAdminPrivilege, final String loggedInUser) {
+		if (request != null) {
 			validateUsersGroupsAndRoles(request.getUsers(),request.getGroups(), request.getRoles());
 			validateGrantor(request.getGrantor());
 			validateGrantees(request.getUsers());
 			validateGroups(request.getGroups());
 			validateRoles(request.getRoles());
+
+			if (!hasAdminPrivilege) {
+				if (!StringUtils.equals(request.getGrantor(), loggedInUser) || StringUtils.isNotBlank(request.getOwnerUser())) {
+					throw restErrorUtil.createGrantRevokeRESTException("Invalid grant/revoke request - contains grantor or userOwner specification");
+				}
+				request.setGrantorGroups(userMgr.getGroupsForUser(request.getGrantor()));
+			}
 		}
 	}
 
@@ -4085,11 +4017,11 @@ public class ServiceREST {
 		if (LOG.isDebugEnabled()) {
 			LOG.debug("==> scheduleCreateOrGetTagService(resourceService=" + resourceService.getName() + ")");
 		}
-		final boolean isAutoCreateTagService = RangerConfiguration.getInstance().getBoolean("ranger.tagservice.auto.create", true);
+		final boolean isAutoCreateTagService = config.getBoolean("ranger.tagservice.auto.create", true);
 
 		if (isAutoCreateTagService) {
 
-			String tagServiceName = RangerConfiguration.getInstance().get("ranger.tagservice.auto.name");
+			String tagServiceName = config.get("ranger.tagservice.auto.name");
 
 			if (StringUtils.isBlank(tagServiceName)) {
 				tagServiceName = getGeneratedTagServiceName(resourceService.getName());
@@ -4100,7 +4032,7 @@ public class ServiceREST {
 					LOG.debug("Attempting to get/create and possibly link to tag-service:[" + tagServiceName + "]");
 				}
 
-				final boolean isAutoLinkTagService = RangerConfiguration.getInstance().getBoolean("ranger.tagservice.auto.link", true);
+				final boolean isAutoLinkTagService = config.getBoolean("ranger.tagservice.auto.link", true);
 				RangerService tagService = null;
 
 				try {
@@ -4182,6 +4114,7 @@ public class ServiceREST {
 			RangerService tagService = new RangerService();
 
 			tagService.setName(context.tagServiceName);
+			tagService.setDisplayName(context.tagServiceName);//set DEFAULT display name
 			tagService.setType(EmbeddedServiceDefsUtil.EMBEDDED_SERVICEDEF_TAG_NAME);
 
 			LOG.info("creating tag-service [" + context.tagServiceName + "]");
@@ -4261,7 +4194,7 @@ public class ServiceREST {
 				if (existingPolicy != null) {
 					svcStore.deletePolicy(existingPolicy, null);
 					totalDeletedPolicies = totalDeletedPolicies + 1;
-					if (totalDeletedPolicies % RangerBizUtil.batchSize == 0) {
+					if (totalDeletedPolicies % RangerBizUtil.policyBatchSize == 0) {
 						bizUtil.bulkModeOnlyFlushAndClear();
 					}
 					if (LOG.isDebugEnabled()) {
@@ -4271,6 +4204,17 @@ public class ServiceREST {
 			}
 			bizUtil.bulkModeOnlyFlushAndClear();
 		}
+	}
+
+	private String getRangerAdminZoneName(String serviceName, GrantRevokeRequest grantRevokeRequest) {
+		String ret = grantRevokeRequest.getZoneName();
+
+		if (StringUtils.isEmpty(ret)) {
+			RangerPolicyAdmin policyAdmin = getPolicyAdmin(serviceName);
+			ret = policyAdmin.getUniquelyMatchedZoneName(grantRevokeRequest);
+		}
+
+		return ret;
 	}
 }
 

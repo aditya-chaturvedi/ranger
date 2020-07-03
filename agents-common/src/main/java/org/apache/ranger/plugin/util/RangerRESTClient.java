@@ -31,7 +31,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -50,8 +49,9 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.Validate;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.ranger.authorization.hadoop.config.RangerConfiguration;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.ranger.authorization.hadoop.utils.RangerCredentialProvider;
+import org.apache.ranger.authorization.utils.StringUtil;
 import org.codehaus.jackson.jaxrs.JacksonJsonProvider;
 
 import com.google.gson.Gson;
@@ -102,27 +102,24 @@ public class RangerRESTClient {
 	private String mTrustStoreAlias;
 	private String mTrustStoreFile;
 	private String mTrustStoreType;
-
 	private Gson   gsonBuilder;
-	private volatile Client client;
+	private int    mRestClientConnTimeOutMs;
+	private int    mRestClientReadTimeOutMs;
+	private int    lastKnownActiveUrlIndex;
 
-	private int  mRestClientConnTimeOutMs;
-	private int  mRestClientReadTimeOutMs;
-
-	private int  lastKnownActiveUrlIndex;
 	private final List<String> configuredURLs;
 
-	public RangerRESTClient() {
-		this(RangerConfiguration.getInstance().get(RANGER_PROP_POLICYMGR_URL),
-			 RangerConfiguration.getInstance().get(RANGER_PROP_POLICYMGR_SSLCONFIG_FILENAME));
-	}
+	private volatile Client client;
 
-	public RangerRESTClient(String url, String sslConfigFileName) {
+
+	public RangerRESTClient(String url, String sslConfigFileName, Configuration config) {
 		mUrl               = url;
 		mSslConfigFileName = sslConfigFileName;
-		this.configuredURLs = getURLs(mUrl);
-		this.setLastKnownActiveUrlIndex((new Random()).nextInt(getConfiguredURLs().size()));
-		init();
+		configuredURLs     = StringUtil.getURLs(mUrl);
+
+		setLastKnownActiveUrlIndex((new Random()).nextInt(getConfiguredURLs().size()));
+
+		init(config);
 	}
 
 	public String getUrl() {
@@ -236,7 +233,7 @@ public class RangerRESTClient {
 		client = null;
 	}
 
-	private void init() {
+	private void init(Configuration config) {
 		try {
 			gsonBuilder = new GsonBuilder().setDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ").create();
 		} catch(Throwable excp) {
@@ -250,23 +247,21 @@ public class RangerRESTClient {
 			InputStream in = null;
 
 			try {
-				RangerConfiguration conf = RangerConfiguration.getInstance();
-
 				in = getFileInputStream(mSslConfigFileName);
 
 				if (in != null) {
-					conf.addResource(in);
+					config.addResource(in);
 				}
 
-				mKeyStoreURL = conf.get(RANGER_POLICYMGR_CLIENT_KEY_FILE_CREDENTIAL);
+				mKeyStoreURL = config.get(RANGER_POLICYMGR_CLIENT_KEY_FILE_CREDENTIAL);
 				mKeyStoreAlias = RANGER_POLICYMGR_CLIENT_KEY_FILE_CREDENTIAL_ALIAS;
-				mKeyStoreType = conf.get(RANGER_POLICYMGR_CLIENT_KEY_FILE_TYPE, RANGER_POLICYMGR_CLIENT_KEY_FILE_TYPE_DEFAULT);
-				mKeyStoreFile = conf.get(RANGER_POLICYMGR_CLIENT_KEY_FILE);
+				mKeyStoreType = config.get(RANGER_POLICYMGR_CLIENT_KEY_FILE_TYPE, RANGER_POLICYMGR_CLIENT_KEY_FILE_TYPE_DEFAULT);
+				mKeyStoreFile = config.get(RANGER_POLICYMGR_CLIENT_KEY_FILE);
 
-				mTrustStoreURL = conf.get(RANGER_POLICYMGR_TRUSTSTORE_FILE_CREDENTIAL);
+				mTrustStoreURL = config.get(RANGER_POLICYMGR_TRUSTSTORE_FILE_CREDENTIAL);
 				mTrustStoreAlias = RANGER_POLICYMGR_TRUSTSTORE_FILE_CREDENTIAL_ALIAS;
-				mTrustStoreType = conf.get(RANGER_POLICYMGR_TRUSTSTORE_FILE_TYPE, RANGER_POLICYMGR_TRUSTSTORE_FILE_TYPE_DEFAULT);
-				mTrustStoreFile = conf.get(RANGER_POLICYMGR_TRUSTSTORE_FILE);
+				mTrustStoreType = config.get(RANGER_POLICYMGR_TRUSTSTORE_FILE_TYPE, RANGER_POLICYMGR_TRUSTSTORE_FILE_TYPE_DEFAULT);
+				mTrustStoreFile = config.get(RANGER_POLICYMGR_TRUSTSTORE_FILE);
 			} catch (IOException ioe) {
 				LOG.error("Unable to load SSL Config FileName: [" + mSslConfigFileName + "]", ioe);
 			} finally {
@@ -558,23 +553,6 @@ public class RangerRESTClient {
 			}
 		}
 		return response;
-	}
-
-
-	public static List<String> getURLs(String configURLs) {
-		List<String> configuredURLs = new ArrayList<>();
-		if(configURLs!=null) {
-			String[] urls = configURLs.split(",");
-			for (String strUrl : urls) {
-				if (StringUtils.isNotEmpty(StringUtils.trimToEmpty(strUrl))) {
-					if (strUrl.endsWith("/")) {
-						strUrl = strUrl.substring(0, strUrl.length() - 1);
-					}
-					configuredURLs.add(strUrl);
-				}
-			}
-		}
-		return configuredURLs;
 	}
 
 	protected static WebResource setQueryParams(WebResource webResource, Map<String, String> params) {

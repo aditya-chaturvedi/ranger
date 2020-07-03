@@ -277,7 +277,14 @@ define(function(require) {
                 roles                           : 'Roles',
                 userWithGrantRolePrivilege      : 'Users (Grant privilege)',
                 groupWithGrantRolePrivilege      : 'Groups (Grant privilege)',
-                applicationType					: 'Application',
+                applicationType                 : 'Application',
+                displayName                     : 'Display Name',
+                auditAccessDetail               : 'Audit Access Log Detail',
+                hiveQuery                       : 'Hive Query',
+                clientIP                        : 'Client IP',
+                eventCount                      : 'Event Count',
+                tags                            : 'Tags',
+                permission                      : 'Permission'
 
 			},
 			btn : {
@@ -453,6 +460,7 @@ define(function(require) {
                 plsSelectUserToSetVisibility :' Please select user to set visibility or selected user is already visible/hidden.',
                 plsSelectGroupToSetVisibility:' Please select group to set visibility or selected group is already visible/hidden.',
                 activationTimeDelayMsg       : 'Policy is updated but not yet used for any enforcement.',
+                downloadTimeDelayMsg       : 'Policy is updated but not yet downloaded(sync-up with Ranger).',
                 pleaseSelectAccessTypeForTagMasking : 'Please select access type first to enable add masking options.',
                 addUserOrGroupOrRoleForDelegateAdmin      : 'Please select user/group/role for the selected permission(s)',
                 policyLabelsinfo		: 'Enter label of policy',
@@ -519,6 +527,7 @@ define(function(require) {
                 nameValidationMsg      :'Name should not start with space, it should be less than 256 characters and special characters are not allowed(except _ - and space).',
                 roleNameValidationMsg :'1. Role name should be start with alphabet / numeric / underscore / non-us characters.<br> 2. Allowed special character ,._\-+/@= and space. <br>3. Name length should be greater than one.',
                 policyNameValidationMsg   :'Please avoid these characters (&, <, >, \', ", `) for policy name.',
+                serviceNameValidationMsg :'Service name should be less than 256 characters and special characters are not allowed (except _ and -)',
 			},
 			serverMsg : {
 

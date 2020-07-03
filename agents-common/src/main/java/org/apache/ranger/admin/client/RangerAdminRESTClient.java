@@ -25,11 +25,11 @@ import com.sun.jersey.api.client.GenericType;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.ranger.admin.client.datatype.RESTResponse;
 import org.apache.ranger.audit.provider.MiscUtil;
-import org.apache.ranger.authorization.hadoop.config.RangerConfiguration;
 import org.apache.ranger.authorization.utils.StringUtil;
 import org.apache.ranger.plugin.model.RangerRole;
 import org.apache.ranger.plugin.util.*;
@@ -76,21 +76,23 @@ public class RangerAdminRESTClient extends AbstractRangerAdminClient {
 	}
 
 	@Override
-	public void init(String serviceName, String appId, String propertyPrefix) {
+	public void init(String serviceName, String appId, String propertyPrefix, Configuration config) {
+	    super.init(serviceName, appId, propertyPrefix, config);
+
 		this.serviceName = serviceName;
 		this.pluginId    = restUtils.getPluginId(serviceName, appId);
 
 		String url                      = "";
-		String tmpUrl                   = RangerConfiguration.getInstance().get(propertyPrefix + ".policy.rest.url");
-		String sslConfigFileName 		= RangerConfiguration.getInstance().get(propertyPrefix + ".policy.rest.ssl.config.file");
-		clusterName       				= RangerConfiguration.getInstance().get(propertyPrefix + ".access.cluster.name", "");
+		String tmpUrl                   = config.get(propertyPrefix + ".policy.rest.url");
+		String sslConfigFileName 		= config.get(propertyPrefix + ".policy.rest.ssl.config.file");
+		clusterName       				= config.get(propertyPrefix + ".access.cluster.name", "");
 		if(StringUtil.isEmpty(clusterName)){
-			clusterName = RangerConfiguration.getInstance().get(propertyPrefix + ".ambari.cluster.name", "");
+			clusterName =config.get(propertyPrefix + ".ambari.cluster.name", "");
 		}
-		int	 restClientConnTimeOutMs	= RangerConfiguration.getInstance().getInt(propertyPrefix + ".policy.rest.client.connection.timeoutMs", 120 * 1000);
-		int	 restClientReadTimeOutMs	= RangerConfiguration.getInstance().getInt(propertyPrefix + ".policy.rest.client.read.timeoutMs", 30 * 1000);
-		supportsPolicyDeltas            = RangerConfiguration.getInstance().get(propertyPrefix + ".policy.rest.supports.policy.deltas", "false");
-		supportsTagDeltas               = RangerConfiguration.getInstance().get(propertyPrefix + ".tag.rest.supports.tag.deltas", "false");
+		int	 restClientConnTimeOutMs	= config.getInt(propertyPrefix + ".policy.rest.client.connection.timeoutMs", 120 * 1000);
+		int	 restClientReadTimeOutMs	= config.getInt(propertyPrefix + ".policy.rest.client.read.timeoutMs", 30 * 1000);
+		supportsPolicyDeltas            = config.get(propertyPrefix + ".policy.rest.supports.policy.deltas", "false");
+		supportsTagDeltas               = config.get(propertyPrefix + ".tag.rest.supports.tag.deltas", "false");
 
         if (!StringUtil.isEmpty(tmpUrl)) {
             url = tmpUrl.trim();
@@ -105,7 +107,7 @@ public class RangerAdminRESTClient extends AbstractRangerAdminClient {
 			supportsTagDeltas = "false";
 		}
 
-		init(url, sslConfigFileName, restClientConnTimeOutMs , restClientReadTimeOutMs);
+		init(url, sslConfigFileName, restClientConnTimeOutMs , restClientReadTimeOutMs, config);
 
         try {
             this.serviceNameUrlParam = URLEncoderUtil.encodeURIParam(serviceName);
@@ -762,12 +764,12 @@ public class RangerAdminRESTClient extends AbstractRangerAdminClient {
 		}
 	}
 
-	private void init(String url, String sslConfigFileName, int restClientConnTimeOutMs , int restClientReadTimeOutMs ) {
+	private void init(String url, String sslConfigFileName, int restClientConnTimeOutMs , int restClientReadTimeOutMs, Configuration config) {
 		if(LOG.isDebugEnabled()) {
 			LOG.debug("==> RangerAdminRESTClient.init(" + url + ", " + sslConfigFileName + ")");
 		}
 
-		restClient = new RangerRESTClient(url, sslConfigFileName);
+		restClient = new RangerRESTClient(url, sslConfigFileName, config);
 		restClient.setRestClientConnTimeOutMs(restClientConnTimeOutMs);
 		restClient.setRestClientReadTimeOutMs(restClientReadTimeOutMs);
 
@@ -901,6 +903,88 @@ public class RangerAdminRESTClient extends AbstractRangerAdminClient {
 
 		if(LOG.isDebugEnabled()) {
 			LOG.debug("<== RangerAdminRESTClient.getTagTypes(" + pattern + "): " + ret);
+		}
+
+		return ret;
+	}
+
+	@Override
+	public RangerUserStore getUserStoreIfUpdated(long lastKnownUserStoreVersion, long lastActivationTimeInMillis) throws Exception {
+		if (LOG.isDebugEnabled()) {
+			LOG.debug("==> RangerAdminRESTClient.getUserStoreIfUpdated(" + lastKnownUserStoreVersion + ", " + lastActivationTimeInMillis + ")");
+		}
+
+		final RangerUserStore ret;
+		final UserGroupInformation user = MiscUtil.getUGILoginUser();
+		final boolean isSecureMode = user != null && UserGroupInformation.isSecurityEnabled();
+		final ClientResponse response;
+
+		Map<String, String> queryParams = new HashMap<String, String>();
+		queryParams.put(RangerRESTUtils.REST_PARAM_LAST_KNOWN_USERSTORE_VERSION, Long.toString(lastKnownUserStoreVersion));
+		queryParams.put(RangerRESTUtils.REST_PARAM_LAST_ACTIVATION_TIME, Long.toString(lastActivationTimeInMillis));
+		queryParams.put(RangerRESTUtils.REST_PARAM_PLUGIN_ID, pluginId);
+		queryParams.put(RangerRESTUtils.REST_PARAM_CLUSTER_NAME, clusterName);
+		queryParams.put(RangerRESTUtils.REST_PARAM_CAPABILITIES, pluginCapabilities);
+
+		if (isSecureMode) {
+			if (LOG.isDebugEnabled()) {
+				LOG.debug("Checking UserStore updated as user : " + user);
+			}
+			PrivilegedAction<ClientResponse> action = new PrivilegedAction<ClientResponse>() {
+				public ClientResponse run() {
+					ClientResponse clientRes = null;
+					String relativeURL = RangerRESTUtils.REST_URL_SERVICE_SERCURE_GET_USERSTORE + serviceNameUrlParam;
+					try {
+						clientRes =  restClient.get(relativeURL, queryParams);
+					} catch (Exception e) {
+						LOG.error("Failed to get response, Error is : "+e.getMessage());
+					}
+					return clientRes;
+				}
+			};
+			response = user.doAs(action);
+		} else {
+			if (LOG.isDebugEnabled()) {
+				LOG.debug("Checking UserStore updated as user : " + user);
+			}
+			String relativeURL = RangerRESTUtils.REST_URL_SERVICE_SERCURE_GET_USERSTORE + serviceNameUrlParam;
+			response = restClient.get(relativeURL, queryParams);
+		}
+
+		if (response == null || response.getStatus() == HttpServletResponse.SC_NOT_MODIFIED) {
+			if (response == null) {
+				LOG.error("Error getting UserStore; Received NULL response!!. secureMode=" + isSecureMode + ", user=" + user + ", serviceName=" + serviceName);
+			} else {
+				RESTResponse resp = RESTResponse.fromClientResponse(response);
+				if (LOG.isDebugEnabled()) {
+					LOG.debug("No change in UserStore. secureMode=" + isSecureMode + ", user=" + user
+							+ ", response=" + resp + ", serviceName=" + serviceName
+							+ ", " + "lastKnownUserStoreVersion=" + lastKnownUserStoreVersion
+							+ ", " + "lastActivationTimeInMillis=" + lastActivationTimeInMillis);
+				}
+			}
+			ret = null;
+		} else if (response.getStatus() == HttpServletResponse.SC_OK) {
+			ret = response.getEntity(RangerUserStore.class);
+		} else if (response.getStatus() == HttpServletResponse.SC_NOT_FOUND) {
+			ret = null;
+			LOG.error("Error getting UserStore; service not found. secureMode=" + isSecureMode + ", user=" + user
+					+ ", response=" + response.getStatus() + ", serviceName=" + serviceName
+					+ ", " + "lastKnownUserStoreVersion=" + lastKnownUserStoreVersion
+					+ ", " + "lastActivationTimeInMillis=" + lastActivationTimeInMillis);
+			String exceptionMsg = response.hasEntity() ? response.getEntity(String.class) : null;
+
+			RangerServiceNotFoundException.throwExceptionIfServiceNotFound(serviceName, exceptionMsg);
+
+			LOG.warn("Received 404 error code with body:[" + exceptionMsg + "], Ignoring");
+		} else {
+			RESTResponse resp = RESTResponse.fromClientResponse(response);
+			LOG.warn("Error getting UserStore. secureMode=" + isSecureMode + ", user=" + user + ", response=" + resp + ", serviceName=" + serviceName);
+			ret = null;
+		}
+
+		if(LOG.isDebugEnabled()) {
+			LOG.debug("<== RangerAdminRESTClient.getUserStoreIfUpdated(" + lastKnownUserStoreVersion + ", " + lastActivationTimeInMillis + "): ");
 		}
 
 		return ret;

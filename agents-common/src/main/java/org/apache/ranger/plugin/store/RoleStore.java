@@ -29,9 +29,9 @@ public interface RoleStore {
 
     void             init() throws Exception;
 
-    RangerRole       createRole(RangerRole role) throws Exception;
+    RangerRole       createRole(RangerRole role, Boolean createNonExistUserGroup) throws Exception;
 
-    RangerRole       updateRole(RangerRole role) throws Exception;
+    RangerRole       updateRole(RangerRole role, Boolean createNonExistUserGroup) throws Exception;
 
     void             deleteRole(String roleName) throws Exception;
 
@@ -45,7 +45,7 @@ public interface RoleStore {
 
     List<String>     getRoleNames(SearchFilter filter) throws Exception;
 
-    RangerRoles getRangerRoles(String serviceName, Long lastKnownRoleVersion) throws Exception;
+    RangerRoles getRoles(String serviceName, Long lastKnownRoleVersion) throws Exception;
 
     Long getRoleVersion(String serviceName);
 

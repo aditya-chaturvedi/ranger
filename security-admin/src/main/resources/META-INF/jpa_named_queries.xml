@@ -127,6 +127,13 @@
 		</query>
 	</named-query>
 
+	<!-- XXGroup -->
+	<named-query name="XXUser.findGroupsByUserIds">
+		<query>SELECT user.name, group.name FROM XXUser user, XXGroup group, XXGroupUser groupUser
+			WHERE user.id=groupUser.userId and group.id=groupUser.parentGroupId
+		</query>
+	</named-query>
+
 	<!-- XXPermMap -->
 	<named-query name="XXPermMap.findByResourceId">
 		<query>SELECT obj FROM XXPermMap obj WHERE obj.resourceId = :resourceId
@@ -325,6 +332,13 @@
 		</query>
 	</named-query>
 
+	<named-query name="XXPolicy.getPoliciesCount">
+		<query>select count(policy.id)
+			from XXPolicy policy, XXService service
+			where service.name = :serviceName and service.id = policy.service
+		</query>
+	</named-query>
+
 	<!-- XXServiceDef -->
 	<named-query name="XXServiceDef.findByName">
 		<query>select obj from XXServiceDef obj where obj.name = :name</query>
@@ -499,6 +513,7 @@
 	<named-query name="XXService.getAllServiceIds">
 		<query>select obj.id from XXService obj</query>
 	</named-query>
+
 	<!-- XXServiceVersionInfo -->
 	<named-query name="XXServiceVersionInfo.findByServiceName">
 		<query>

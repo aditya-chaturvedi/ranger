@@ -48,6 +48,7 @@ import org.apache.ranger.common.RangerConstants;
 import org.apache.ranger.common.SearchCriteria;
 import org.apache.ranger.common.StringUtil;
 import org.apache.ranger.db.RangerDaoManager;
+import org.apache.ranger.elasticsearch.ElasticSearchAccessAuditsService;
 import org.apache.ranger.entity.XXPermMap;
 import org.apache.ranger.entity.XXPluginInfo;
 import org.apache.ranger.entity.XXPolicyExportAudit;
@@ -108,6 +109,9 @@ public class AssetMgr extends AssetMgrBase {
 
 	@Autowired
 	SolrAccessAuditsService solrAccessAuditsService;
+
+	@Autowired
+	ElasticSearchAccessAuditsService elasticSearchAccessAuditsService;
 
 	@Autowired
 	XPolicyService xPolicyService;
@@ -707,6 +711,12 @@ public class AssetMgr extends AssetMgrBase {
 				pluginSvcVersionInfo.setRoleDownloadedVersion(downloadedVersion);
 				pluginSvcVersionInfo.setRoleDownloadTime(new Date().getTime());
 				break;
+			case RangerPluginInfo.ENTITY_TYPE_USERSTORE:
+				pluginSvcVersionInfo.setUserStoreActiveVersion(lastKnownVersion);
+				pluginSvcVersionInfo.setUserStoreActivationTime(lastActivationTime);
+				pluginSvcVersionInfo.setUserStoreDownloadedVersion(downloadedVersion);
+				pluginSvcVersionInfo.setUserStoreDownloadTime(new Date().getTime());
+				break;
 		}
 
 		createOrUpdatePluginInfo(pluginSvcVersionInfo, entityType , httpCode, clusterName);
@@ -735,6 +745,9 @@ public class AssetMgr extends AssetMgrBase {
 				case RangerPluginInfo.ENTITY_TYPE_ROLES:
 					isTagVersionResetNeeded = false;
 					break;
+				case RangerPluginInfo.ENTITY_TYPE_USERSTORE:
+					isTagVersionResetNeeded = false;
+					break;
 				default:
 					isTagVersionResetNeeded = false;
 					break;
@@ -751,7 +764,8 @@ public class AssetMgr extends AssetMgrBase {
 			Runnable commitWork;
 			if ((isPolicyDownloadRequest(entityType) && (pluginInfo.getPolicyActiveVersion() == null || pluginInfo.getPolicyActiveVersion() == -1))
 					|| (isTagDownloadRequest(entityType) && (pluginInfo.getTagActiveVersion() == null || pluginInfo.getTagActiveVersion() == -1))
-					|| (isRoleDownloadRequest(entityType) && (pluginInfo.getRoleActiveVersion() == null || pluginInfo.getRoleActiveVersion() == -1))) {
+					|| (isRoleDownloadRequest(entityType) && (pluginInfo.getRoleActiveVersion() == null || pluginInfo.getRoleActiveVersion() == -1))
+					|| (isUserStoreDownloadRequest(entityType) && (pluginInfo.getUserStoreActiveVersion() == null || pluginInfo.getUserStoreActiveVersion() == -1))) {
 				commitWork = new Runnable() {
 					@Override
 					public void run() {
@@ -804,10 +818,15 @@ public class AssetMgr extends AssetMgrBase {
 						// This is our best guess of when tags may have been downloaded
 						pluginInfo.setTagDownloadTime(pluginInfo.getTagActivationTime());
 					}
-				} else {
+				} else if (isRoleDownloadRequest(entityType)) {
 					if (pluginInfo.getRoleDownloadTime() != null && pluginInfo.getRoleDownloadedVersion().equals(pluginInfo.getRoleActiveVersion())) {
 						// This is our best guess of when role may have been downloaded
 						pluginInfo.setRoleDownloadTime(pluginInfo.getRoleActivationTime());
+					}
+				} else {
+					if (pluginInfo.getUserStoreDownloadTime() != null && pluginInfo.getUserStoreDownloadedVersion().equals(pluginInfo.getUserStoreActiveVersion())) {
+						// This is our best guess of when users and groups may have been downloaded
+						pluginInfo.setUserStoreDownloadTime(pluginInfo.getUserStoreActivationTime());
 					}
 				}
 
@@ -891,7 +910,7 @@ public class AssetMgr extends AssetMgrBase {
 						dbObj.setTagActivationTime(lastTagActivationTime);
 						needsUpdating = true;
 					}
-				} else {
+				} else if (isRoleDownloadRequest(entityType)){
 					if (dbObj.getRoleDownloadedVersion() == null || !dbObj.getRoleDownloadedVersion().equals(pluginInfo.getRoleDownloadedVersion())) {
 						dbObj.setRoleDownloadedVersion(pluginInfo.getRoleDownloadedVersion());
 						dbObj.setRoleDownloadTime(pluginInfo.getRoleDownloadTime());
@@ -913,6 +932,30 @@ public class AssetMgr extends AssetMgrBase {
 
 					if (lastRoleActivationTime != null && lastRoleActivationTime > 0 && (dbObj.getRoleActivationTime() == null || !dbObj.getRoleActivationTime().equals(lastRoleActivationTime))) {
 						dbObj.setRoleActivationTime(lastRoleActivationTime);
+						needsUpdating = true;
+					}
+				} else {
+					if (dbObj.getUserStoreDownloadedVersion() == null || !dbObj.getUserStoreDownloadedVersion().equals(pluginInfo.getUserStoreDownloadedVersion())) {
+						dbObj.setUserStoreDownloadedVersion(pluginInfo.getUserStoreDownloadedVersion());
+						dbObj.setUserStoreDownloadTime(pluginInfo.getUserStoreDownloadTime());
+						needsUpdating = true;
+					}
+
+					Long lastKnownUserStoreVersion = pluginInfo.getUserStoreActiveVersion();
+					Long lastUserStoreActivationTime = pluginInfo.getUserStoreActivationTime();
+
+					if (lastKnownUserStoreVersion != null && lastKnownUserStoreVersion == -1) {
+						dbObj.setUserStoreDownloadTime(pluginInfo.getUserStoreDownloadTime());
+						needsUpdating = true;
+					}
+
+					if (lastKnownUserStoreVersion != null && lastKnownUserStoreVersion > 0 && (dbObj.getUserStoreActiveVersion() == null || !dbObj.getUserStoreActiveVersion().equals(lastKnownUserStoreVersion))) {
+						dbObj.setUserStoreActiveVersion(lastKnownUserStoreVersion);
+						needsUpdating = true;
+					}
+
+					if (lastUserStoreActivationTime != null && lastUserStoreActivationTime > 0 && (dbObj.getUserStoreActivationTime() == null || !dbObj.getUserStoreActivationTime().equals(lastUserStoreActivationTime))) {
+						dbObj.setUserStoreActivationTime(lastUserStoreActivationTime);
 						needsUpdating = true;
 					}
 				}
@@ -1083,6 +1126,8 @@ public class AssetMgr extends AssetMgrBase {
 
         if (RangerBizUtil.AUDIT_STORE_SOLR.equalsIgnoreCase(xaBizUtil.getAuditDBType())) {
             return solrAccessAuditsService.searchXAccessAudits(searchCriteria);
+        } else if (RangerBizUtil.AUDIT_STORE_ElasticSearch.equalsIgnoreCase(xaBizUtil.getAuditDBType())) {
+            return elasticSearchAccessAuditsService.searchXAccessAudits(searchCriteria);
         } else {
             return xAccessAuditService.searchXAccessAudits(searchCriteria);
         }
@@ -1255,5 +1300,9 @@ public class AssetMgr extends AssetMgrBase {
 
 	private boolean isRoleDownloadRequest(int entityType) {
 		return entityType == RangerPluginInfo.ENTITY_TYPE_ROLES;
+	}
+
+	private boolean isUserStoreDownloadRequest(int entityType) {
+		return entityType == RangerPluginInfo.ENTITY_TYPE_USERSTORE;
 	}
 }
