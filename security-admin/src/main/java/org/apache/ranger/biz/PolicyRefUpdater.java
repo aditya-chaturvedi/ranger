@@ -23,10 +23,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import javax.servlet.http.HttpServletResponse;
+
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.ranger.common.RESTErrorUtil;
 import org.apache.ranger.common.RangerCommonEnums;
 import org.apache.ranger.common.db.RangerTransactionSynchronizationAdapter;
 import org.apache.ranger.db.RangerDaoManager;
@@ -59,6 +62,8 @@ import org.apache.ranger.service.RangerTransactionService;
 import org.apache.ranger.service.XGroupService;
 import org.apache.ranger.service.XUserService;
 import org.apache.ranger.view.VXGroup;
+import org.apache.ranger.view.VXResponse;
+import org.apache.ranger.view.VXUser;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -95,6 +100,9 @@ public class PolicyRefUpdater {
 
 	@Autowired
 	RangerTransactionService transactionService;
+
+	@Autowired
+	RESTErrorUtil restErrorUtil;
 
 	public void createNewPolMappingForRefTable(RangerPolicy policy, XXPolicy xPolicy, XXServiceDef xServiceDef) throws Exception {
 		if(policy == null) {
@@ -205,7 +213,14 @@ public class PolicyRefUpdater {
 				groupPolicyAssociation(xPolicy,groupId,group );
 			}
 			else {
-				createGroupForPolicy(group, xPolicy);
+				if(rangerBizUtil.checkAdminAccess()) {
+					createGroupForPolicy(group, xPolicy);
+				}else {
+					VXResponse gjResponse = new VXResponse();
+					gjResponse.setStatusCode(HttpServletResponse.SC_BAD_REQUEST);
+					gjResponse.setMsgDesc("Operation denied. Group name: "+group + " specified in policy does not exist in ranger admin.");
+					throw restErrorUtil.generateRESTException(gjResponse);
+				}
 			}
 		}
 
@@ -221,7 +236,14 @@ public class PolicyRefUpdater {
 				userPolicyAssociation(xPolicy,userId, user );
 			}
 			else {
-				createUserForPolicy(user,xPolicy);
+				if(rangerBizUtil.checkAdminAccess()) {
+					createUserForPolicy(user,xPolicy);
+				}else {
+					VXResponse gjResponse = new VXResponse();
+					gjResponse.setStatusCode(HttpServletResponse.SC_BAD_REQUEST);
+					gjResponse.setMsgDesc("Operation denied. User name: "+user + " specified in policy does not exist in ranger admin.");
+					throw restErrorUtil.generateRESTException(gjResponse);
+				}
 			}
 
 		}
@@ -284,19 +306,13 @@ public class PolicyRefUpdater {
 	private void createUserForPolicy(String user, XXPolicy xPolicy) {
 		LOG.warn("User specified in policy does not exist in ranger admin, creating new user, User = " + user);
 		final PolicyUserCreateContext policyUserCreateContext = new PolicyUserCreateContext(user, xPolicy);
-		Runnable CreateAndAssociateUser = new Runnable () {
+		Runnable createAndAssociateUser = new Runnable () {
 			@Override
 			public void run() {
-				Runnable realTask = new Runnable () {
-					@Override
-					public void run() {
-						doCreateAndAssociatePolicyUser(policyUserCreateContext);
-					}
-				};
-				transactionService.scheduleToExecuteInOwnTransaction(realTask, 0L);
+				doCreateAndAssociatePolicyUser(policyUserCreateContext);
 			}
 		};
-		rangerTransactionSynchronizationAdapter.executeOnTransactionCommit(CreateAndAssociateUser);
+		rangerTransactionSynchronizationAdapter.executeOnTransactionCommit(createAndAssociateUser);
 	}
 
 	private void createGroupForPolicy(String group, XXPolicy xPolicy) {
@@ -309,13 +325,7 @@ public class PolicyRefUpdater {
 		Runnable createAndAssociatePolicyGroup = new Runnable() {
 			@Override
 			public void run() {
-				Runnable realTask = new Runnable() {
-					@Override
-					public void run() {
-						doCreateAndAssociatePolicyGroup(policyGroupCreateContext);
-					}
-				};
-				transactionService.scheduleToExecuteInOwnTransaction(realTask, 0L);
+				doCreateAndAssociatePolicyGroup(policyGroupCreateContext);
 			}
 		};
 		rangerTransactionSynchronizationAdapter.executeOnTransactionCommit(createAndAssociatePolicyGroup);
@@ -325,12 +335,17 @@ public class PolicyRefUpdater {
 	private Long createRoleForPolicy(String role) throws Exception {
 		LOG.warn("Role specified in policy does not exist in ranger admin, creating new role = " + role);
 
-		RangerRole rRole = new RangerRole(role, null, null, null, null);
-
-		xUserMgr.checkAdminAccess();
-
-		RangerRole createdRole= roleStore.createRole(rRole, false);
-		return createdRole.getId();
+		if (rangerBizUtil.checkAdminAccess()) {
+			RangerRole rRole = new RangerRole(role, null, null, null, null);
+			RangerRole createdRole = roleStore.createRole(rRole, false);
+			return createdRole.getId();
+		} else {
+			VXResponse gjResponse = new VXResponse();
+			gjResponse.setStatusCode(HttpServletResponse.SC_BAD_REQUEST);
+			gjResponse.setMsgDesc(
+					"Operation denied. Role name: " + role + " specified in policy does not exist in ranger admin.");
+			throw restErrorUtil.generateRESTException(gjResponse);
+		}
 	}
 
 
@@ -352,7 +367,7 @@ public class PolicyRefUpdater {
 		return true;
 	}
 
-	static List<List<? extends RangerPolicyItem>> getAllPolicyItems(RangerPolicy policy) {
+	public static List<List<? extends RangerPolicyItem>> getAllPolicyItems(RangerPolicy policy) {
 		List<List<? extends RangerPolicyItem>> ret = new ArrayList<>();
 
 		if (CollectionUtils.isNotEmpty(policy.getPolicyItems())) {
@@ -436,39 +451,29 @@ public class PolicyRefUpdater {
 		if (xGroup != null) {
 			groupPolicyAssociation(context.xPolicy, xGroup.getId(), context.group.getName());
 		} else {
-			try {
-				// Create group
-				VXGroup vXGroup = xGroupService.createXGroupWithOutLogin(context.group);
-				if (null != vXGroup) {
+			// Create group
+			VXGroup vXGroup = xGroupService.createXGroupWithOutLogin(context.group);
+			if (vXGroup != null) {
+				try {
 					List<XXTrxLog> trxLogList = xGroupService.getTransactionLog(vXGroup, "create");
-					for(XXTrxLog xTrxLog : trxLogList) {
+					for (XXTrxLog xTrxLog : trxLogList) {
 						xTrxLog.setAddedByUserId(context.xPolicy.getAddedByUserId());
 						xTrxLog.setUpdatedByUserId(context.xPolicy.getAddedByUserId());
 					}
 					rangerBizUtil.createTrxLog(trxLogList);
+				} catch (Throwable t) {
+					// Ignore
 				}
-			} catch (Exception exception) {
-				LOG.error("Failed to create Group or to associate group and policy, PolicyGroupContext:[" + context + "]",
-						exception);
-			} finally {
-				// This transaction may still fail at commit time because another transaction
-				// has already created the group
-				// So, associate the group to policy in a different transaction
-				Runnable associatePolicyGroup = new Runnable() {
-					@Override
-					public void run() {
-						Runnable realTask = new Runnable() {
-							@Override
-							public void run() {
-								doAssociatePolicyGroup(context);
-							}
-						};
-						transactionService.scheduleToExecuteInOwnTransaction(realTask, 0L);
-					}
-				};
-				rangerTransactionSynchronizationAdapter.executeOnTransactionCompletion(associatePolicyGroup);
-
+				doAssociatePolicyGroup(context);
+			} else {
+				if (LOG.isDebugEnabled()) {
+					LOG.debug("Group:[" + context.group + "] creation failed!");
+					throw new RuntimeException("Group:[" + context.group + "] creation failed!");
+				}
 			}
+		}
+		if (LOG.isDebugEnabled()) {
+			LOG.debug("<=== PolicyRefUpdater.doCreateAndAssociatePolicyGroup()");
 		}
 	}
 
@@ -529,31 +534,19 @@ public class PolicyRefUpdater {
 		if (xUser != null) {
 			userPolicyAssociation(context.xPolicy, xUser.getId(), context.userName);
 		} else {
-			try {
-				// Create External user
-				xUserMgr.createServiceConfigUser(context.userName);
-			} catch (Exception exception) {
-				LOG.error("Failed to create User or to associate user and policy, PolicyUserContext:[" + context + "]",
-						exception);
-			} finally {
-				// This transaction may still fail at commit time because another transaction
-				// has already created the user
-				// So, associate the user to policy in a different transaction
-				Runnable associatePolicyUser = new Runnable() {
-					@Override
-					public void run() {
-						Runnable realTask = new Runnable() {
-							@Override
-							public void run() {
-								doAssociatePolicyUser(context);
-							}
-						};
-						transactionService.scheduleToExecuteInOwnTransaction(realTask, 0L);
-					}
-				};
-				rangerTransactionSynchronizationAdapter.executeOnTransactionCompletion(associatePolicyUser);
+			// Create External user
+			VXUser vXUser = xUserMgr.createServiceConfigUser(context.userName);
+			if (vXUser != null) {
+				doAssociatePolicyUser(context);
+			} else {
+				if (LOG.isDebugEnabled()) {
+					LOG.debug("serviceConfigUser:[" + context.userName + "] creation failed");
+					throw new RuntimeException("serviceConfigUser:[" + context.userName + "] creation failed");
+				}
 			}
 		}
-
+		if (LOG.isDebugEnabled()) {
+			LOG.debug("<=== PolicyRefUpdater.doCreateAndAssociatePolicyUser()");
+		}
 	}
 }

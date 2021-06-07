@@ -43,6 +43,7 @@ public class RangerAccessRequestUtil {
 	public static final String KEY_USER = "USER";
 	public static final String KEY_OWNER = "OWNER";
 	public static final String KEY_ROLES = "ROLES";
+	public static final String KEY_CONTEXT_ACCESSTYPES = "ACCESSTYPES";
 
 	public static void setRequestTagsInContext(Map<String, Object> context, Set<RangerTagForEval> tags) {
 		if(CollectionUtils.isEmpty(tags)) {
@@ -76,7 +77,7 @@ public class RangerAccessRequestUtil {
 
 	public static RangerTagForEval getCurrentTagFromContext(Map<String, Object> context) {
 		RangerTagForEval ret = null;
-		Object    val = context.get(KEY_CONTEXT_TAGS);
+		Object    val = context.get(KEY_CONTEXT_TAG_OBJECT);
 
 		if(val instanceof RangerTagForEval) {
 			ret = (RangerTagForEval)val;
@@ -106,7 +107,7 @@ public class RangerAccessRequestUtil {
 
 	public static RangerAccessResource getCurrentResourceFromContext(Map<String, Object> context) {
 		RangerAccessResource ret = null;
-		Object               val = context.get(KEY_CONTEXT_RESOURCE);
+		Object               val = MapUtils.isNotEmpty(context) ? context.get(KEY_CONTEXT_RESOURCE) : null;
 
 		if(val instanceof RangerAccessResource) {
 			ret = (RangerAccessResource)val;

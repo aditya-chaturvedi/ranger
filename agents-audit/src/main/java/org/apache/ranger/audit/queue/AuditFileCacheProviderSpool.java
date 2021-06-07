@@ -56,10 +56,10 @@ public class AuditFileCacheProviderSpool implements Runnable {
     public static final String PROP_FILE_SPOOL_FILE_ROLLOVER 			= "filespool.file.rollover.sec";
     public static final String PROP_FILE_SPOOL_INDEX_FILE 				= "filespool.index.filename";
     public static final String PROP_FILE_SPOOL_DEST_RETRY_MS 			= "filespool.destination.retry.ms";
+    public static final String PROP_FILE_SPOOL_BATCH_SIZE               = "filespool.buffer.size";
 
     public static final String AUDIT_IS_FILE_CACHE_PROVIDER_ENABLE_PROP = "xasecure.audit.provider.filecache.is.enabled";
     public static final String FILE_CACHE_PROVIDER_NAME 				= "AuditFileCacheProviderSpool";
-    public static final int    AUDIT_BATCH_SIZE_DEFAULT 				= 1000;
 
     AuditHandler consumerProvider = null;
 
@@ -79,6 +79,7 @@ public class AuditFileCacheProviderSpool implements Runnable {
     int 	fileRolloverSec 	= 24 * 60 * 60; // In seconds
     int 	maxArchiveFiles 	= 100;
     int 	errorLogIntervalMS 	= 30 * 1000; // Every 30 seconds
+    int     auditBatchSize      = 1000;
     long 	lastErrorLogMS 		= 0;
     boolean isAuditFileCacheProviderEnabled = false;
     boolean closeFile 			= false;
@@ -275,6 +276,10 @@ public class AuditFileCacheProviderSpool implements Runnable {
                     + FILE_CACHE_PROVIDER_NAME, t);
             return false;
         }
+
+        auditBatchSize = MiscUtil.getIntProperty(props, propPrefix
+                + "." + PROP_FILE_SPOOL_BATCH_SIZE, auditBatchSize);
+
         initDone = true;
 
         logger.debug("<== AuditFileCacheProviderSpool.init()");
@@ -824,7 +829,7 @@ public class AuditFileCacheProviderSpool implements Runnable {
                             AuditEventBase event = MiscUtil.fromJson(line, AuthzAuditEvent.class);
                             events.add(event);
 
-                            if (events.size() == AUDIT_BATCH_SIZE_DEFAULT) {
+                            if (events.size() == auditBatchSize) {
                                 boolean ret = sendEvent(events,
                                         currentConsumerIndexRecord, currLine);
                                 if (!ret) {

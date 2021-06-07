@@ -22,6 +22,7 @@ import subprocess
 from os.path import basename
 import time
 import socket
+import glob
 globalDict = {}
 
 os_name = platform.system()
@@ -90,6 +91,16 @@ def populate_global_dict():
 			globalDict[key] = value
 		if 'ranger_admin_max_heap_size' not in globalDict:
 			globalDict['ranger_admin_max_heap_size']='1g'
+		elif 'ranger_admin_max_heap_size' in globalDict:
+			ranger_admin_heap_size = globalDict['ranger_admin_max_heap_size']
+			if str(ranger_admin_heap_size.lower()).endswith("g"):
+				ranger_admin_heap_size_numeric = int(str(ranger_admin_heap_size).lower().rstrip("g"))
+				if ranger_admin_heap_size_numeric < 1:
+					globalDict['ranger_admin_max_heap_size']='1g'
+			if str(ranger_admin_heap_size.lower()).endswith("m"):
+				ranger_admin_heap_size_numeric = int(str(ranger_admin_heap_size).lower().rstrip("m"))
+				if ranger_admin_heap_size_numeric < 1024:
+					globalDict['ranger_admin_max_heap_size']='1g'
 
 def jisql_log(query, db_password):
 	if jisql_debug == True:
@@ -129,6 +140,22 @@ def dbversionBasedOnUserName(userName):
 	if userName == "keyadmin" :
 		version = 'DEFAULT_KEYADMIN_UPDATE'
 	return version
+
+def set_env_val(command):
+	proc = subprocess.Popen(command, stdout = subprocess.PIPE)
+	for line in proc.stdout:
+		(key, _, value) = line.decode('utf8').partition('=')
+		os.environ[key] = value.rstrip()
+	proc.communicate()
+
+def run_env_file(path):
+	for filename in glob.glob(path):
+		log("[I] Env filename : "+filename, "info")
+		if not os.path.exists(filename):
+			log("[I] File dose not exist : "+filename, "info")
+		else:
+			command = shlex.split("env -i /bin/bash -c 'source "+filename+" && env'")
+			set_env_val(command)
 
 class BaseDB(object):
 
@@ -837,7 +864,7 @@ class OracleConf(BaseDB):
 
 class PostgresConf(BaseDB):
 	# Constructor
-	def __init__(self, host,SQL_CONNECTOR_JAR,JAVA_BIN,db_ssl_enabled,db_ssl_required,db_ssl_verifyServerCertificate,javax_net_ssl_keyStore,javax_net_ssl_keyStorePassword,javax_net_ssl_trustStore,javax_net_ssl_trustStorePassword,db_ssl_auth_type):
+	def __init__(self, host,SQL_CONNECTOR_JAR,JAVA_BIN,db_ssl_enabled,db_ssl_required,db_ssl_verifyServerCertificate,javax_net_ssl_keyStore,javax_net_ssl_keyStorePassword,javax_net_ssl_trustStore,javax_net_ssl_trustStorePassword,db_ssl_auth_type,db_ssl_certificate_file,javax_net_ssl_trustStore_type,javax_net_ssl_keyStore_type):
 		self.host = host.lower()
 		self.SQL_CONNECTOR_JAR = SQL_CONNECTOR_JAR
 		self.JAVA_BIN = JAVA_BIN
@@ -845,10 +872,13 @@ class PostgresConf(BaseDB):
 		self.db_ssl_required=db_ssl_required.lower()
 		self.db_ssl_verifyServerCertificate=db_ssl_verifyServerCertificate.lower()
 		self.db_ssl_auth_type=db_ssl_auth_type.lower()
+		self.db_ssl_certificate_file=db_ssl_certificate_file
 		self.javax_net_ssl_keyStore=javax_net_ssl_keyStore
 		self.javax_net_ssl_keyStorePassword=javax_net_ssl_keyStorePassword
+		self.javax_net_ssl_keyStore_type=javax_net_ssl_keyStore_type.lower()
 		self.javax_net_ssl_trustStore=javax_net_ssl_trustStore
 		self.javax_net_ssl_trustStorePassword=javax_net_ssl_trustStorePassword
+		self.javax_net_ssl_trustStore_type=javax_net_ssl_trustStore_type.lower()
 		self.commandTerminator=" "
 		self.XA_DB_FLAVOR = "POSTGRES"
 
@@ -858,15 +888,16 @@ class PostgresConf(BaseDB):
 		db_ssl_param=''
 		db_ssl_cert_param=''
 		if self.db_ssl_enabled == 'true':
-			db_ssl_param="?ssl=%s" %(self.db_ssl_enabled)
-			if self.db_ssl_verifyServerCertificate == 'true' or self.db_ssl_required == 'true':
-				db_ssl_param="?ssl=%s" %(self.db_ssl_enabled)
+			if self.db_ssl_certificate_file != "":
+				db_ssl_param="?ssl=%s&sslmode=verify-full&sslrootcert=%s" %(self.db_ssl_enabled,self.db_ssl_certificate_file)
+			elif self.db_ssl_verifyServerCertificate == 'true' or self.db_ssl_required == 'true':
+				db_ssl_param="?ssl=%s&sslmode=verify-full&sslfactory=org.postgresql.ssl.DefaultJavaSSLFactory" %(self.db_ssl_enabled)
 				if self.db_ssl_auth_type == '1-way':
-					db_ssl_cert_param=" -Djavax.net.ssl.trustStore=%s -Djavax.net.ssl.trustStorePassword=%s " %(self.javax_net_ssl_trustStore,self.javax_net_ssl_trustStorePassword)
+					db_ssl_cert_param=" -Djavax.net.ssl.trustStore=%s -Djavax.net.ssl.trustStorePassword=%s  -Djavax.net.ssl.trustStoreType=%s" %(self.javax_net_ssl_trustStore,self.javax_net_ssl_trustStorePassword,self.javax_net_ssl_trustStore_type)
 				else:
-					db_ssl_cert_param=" -Djavax.net.ssl.keyStore=%s -Djavax.net.ssl.keyStorePassword=%s -Djavax.net.ssl.trustStore=%s -Djavax.net.ssl.trustStorePassword=%s " %(self.javax_net_ssl_keyStore,self.javax_net_ssl_keyStorePassword,self.javax_net_ssl_trustStore,self.javax_net_ssl_trustStorePassword)
+					db_ssl_cert_param=" -Djavax.net.ssl.keyStore=%s -Djavax.net.ssl.keyStorePassword=%s -Djavax.net.ssl.trustStore=%s -Djavax.net.ssl.trustStorePassword=%s -Djavax.net.ssl.trustStoreType=%s -Djavax.net.ssl.keyStoreType=%s" %(self.javax_net_ssl_keyStore,self.javax_net_ssl_keyStorePassword,self.javax_net_ssl_trustStore,self.javax_net_ssl_trustStorePassword,self.javax_net_ssl_trustStore_type,self.javax_net_ssl_keyStore_type)
 			else:
-				db_ssl_param="?ssl=%s&sslfactory=org.postgresql.ssl.NonValidatingFactory" %(self.db_ssl_enabled)
+				db_ssl_param="?ssl=%s" %(self.db_ssl_enabled)
 		if is_unix:
 			jisql_cmd = "%s %s -cp %s:%s/jisql/lib/* org.apache.util.sql.Jisql -driver postgresql -cstring jdbc:postgresql://%s/%s%s -u %s -p '%s' -noheader -trim -c \;" %(self.JAVA_BIN, db_ssl_cert_param,self.SQL_CONNECTOR_JAR,path, self.host, db_name, db_ssl_param,user, password)
 		elif os_name == "WINDOWS":
@@ -1113,6 +1144,9 @@ def main(argv):
 	javax_net_ssl_keyStorePassword=''
 	javax_net_ssl_trustStore=''
 	javax_net_ssl_trustStorePassword=''
+	db_ssl_certificate_file=''
+	javax_net_ssl_trustStore_type='bcfks'
+	javax_net_ssl_keyStore_type='bcfks'
 
 	if XA_DB_FLAVOR == "MYSQL" or XA_DB_FLAVOR == "POSTGRES":
 		if 'db_ssl_enabled' in globalDict:
@@ -1124,22 +1158,33 @@ def main(argv):
 					db_ssl_verifyServerCertificate=globalDict['db_ssl_verifyServerCertificate'].lower()
 				if 'db_ssl_auth_type' in globalDict:
 					db_ssl_auth_type=globalDict['db_ssl_auth_type'].lower()
+				if 'db_ssl_certificate_file' in globalDict:
+					db_ssl_certificate_file=globalDict['db_ssl_certificate_file']
+				if 'javax_net_ssl_trustStore' in globalDict:
+					javax_net_ssl_trustStore=globalDict['javax_net_ssl_trustStore']
+				if 'javax_net_ssl_trustStorePassword' in globalDict:
+					javax_net_ssl_trustStorePassword=globalDict['javax_net_ssl_trustStorePassword']
+				if 'javax_net_ssl_trustStore_type' in globalDict:
+					javax_net_ssl_trustStore_type=globalDict['javax_net_ssl_trustStore_type']
 				if db_ssl_verifyServerCertificate == 'true':
-					if 'javax_net_ssl_trustStore' in globalDict:
-						javax_net_ssl_trustStore=globalDict['javax_net_ssl_trustStore']
-					if 'javax_net_ssl_trustStorePassword' in globalDict:
-						javax_net_ssl_trustStorePassword=globalDict['javax_net_ssl_trustStorePassword']
-					if not os.path.exists(javax_net_ssl_trustStore):
-						log("[E] Invalid file Name! Unable to find truststore file:"+javax_net_ssl_trustStore,"error")
-						sys.exit(1)
-					if javax_net_ssl_trustStorePassword is None or javax_net_ssl_trustStorePassword =="":
-						log("[E] Invalid ssl truststore password!","error")
-						sys.exit(1)
+					if  db_ssl_certificate_file != "":
+						if not os.path.exists(db_ssl_certificate_file):
+							log("[E] Invalid file Name! Unable to find certificate file:"+db_ssl_certificate_file,"error")
+							sys.exit(1)
+					elif db_ssl_auth_type == '1-way' and db_ssl_certificate_file == "" :
+						if not os.path.exists(javax_net_ssl_trustStore):
+							log("[E] Invalid file Name! Unable to find truststore file:"+javax_net_ssl_trustStore,"error")
+							sys.exit(1)
+						if javax_net_ssl_trustStorePassword is None or javax_net_ssl_trustStorePassword =="":
+							log("[E] Invalid ssl truststore password!","error")
+							sys.exit(1)
 					if db_ssl_auth_type == '2-way':
 						if 'javax_net_ssl_keyStore' in globalDict:
 							javax_net_ssl_keyStore=globalDict['javax_net_ssl_keyStore']
 						if 'javax_net_ssl_keyStorePassword' in globalDict:
 							javax_net_ssl_keyStorePassword=globalDict['javax_net_ssl_keyStorePassword']
+						if 'javax_net_ssl_keyStore_type' in globalDict:
+							javax_net_ssl_keyStore_type=globalDict['javax_net_ssl_keyStore_type']
 						if not os.path.exists(javax_net_ssl_keyStore):
 							log("[E] Invalid file Name! Unable to find keystore file:"+javax_net_ssl_keyStore,"error")
 							sys.exit(1)
@@ -1169,7 +1214,7 @@ def main(argv):
 		db_user=db_user.lower()
 		db_name=db_name.lower()
 		POSTGRES_CONNECTOR_JAR = globalDict['SQL_CONNECTOR_JAR']
-		xa_sqlObj = PostgresConf(xa_db_host, POSTGRES_CONNECTOR_JAR, JAVA_BIN,db_ssl_enabled,db_ssl_required,db_ssl_verifyServerCertificate,javax_net_ssl_keyStore,javax_net_ssl_keyStorePassword,javax_net_ssl_trustStore,javax_net_ssl_trustStorePassword,db_ssl_auth_type)
+		xa_sqlObj = PostgresConf(xa_db_host, POSTGRES_CONNECTOR_JAR, JAVA_BIN,db_ssl_enabled,db_ssl_required,db_ssl_verifyServerCertificate,javax_net_ssl_keyStore,javax_net_ssl_keyStorePassword,javax_net_ssl_trustStore,javax_net_ssl_trustStorePassword,db_ssl_auth_type,db_ssl_certificate_file,javax_net_ssl_trustStore_type,javax_net_ssl_keyStore_type)
 		xa_db_version_file = os.path.join(RANGER_ADMIN_HOME , postgres_dbversion_catalog)
 		xa_db_core_file = os.path.join(RANGER_ADMIN_HOME , postgres_core_file)
 		xa_patch_file = os.path.join(RANGER_ADMIN_HOME , postgres_patches)
@@ -1235,6 +1280,19 @@ def main(argv):
 						xa_sqlObj.is_new_install(xa_db_host, db_user, db_password, db_name)
 
 			if str(argv[i]) == "-changepassword":
+				rangerAdminConf="/etc/ranger/admin/conf"
+				if os.path.exists(rangerAdminConf):
+					RANGER_ADMIN_ENV_PATH = rangerAdminConf
+				else:
+					RANGER_ADMIN_ENV_PATH = RANGER_ADMIN_CONF
+				log("[I] RANGER_ADMIN_ENV_PATH : "+RANGER_ADMIN_ENV_PATH,"info")
+				if not os.path.exists(RANGER_ADMIN_ENV_PATH):
+					log("[I] path  dose not exist" +RANGER_ADMIN_ENV_PATH,"info")
+				else:
+					env_file_path = RANGER_ADMIN_ENV_PATH + '/' + 'ranger-admin-env*.sh'
+					log("[I] env_file_path : " +env_file_path,"info")
+					run_env_file(env_file_path)
+
 				if len(argv)>5:
 					isValidPassWord = False
 					for j in range(len(argv)):

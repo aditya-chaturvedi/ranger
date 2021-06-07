@@ -35,6 +35,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -132,7 +133,7 @@ public class RangerServicePoliciesCache {
 		}
 
 		if (LOG.isDebugEnabled()) {
-			LOG.debug("<== RangerServicePoliciesCache.getServicePolicies(" + serviceName + ", " + serviceId + ", " + lastKnownVersion + ", " + needsBackwardCompatibility + "): count=" + ((ret == null || ret.getPolicies() == null) ? 0 : ret.getPolicies().size()));
+			LOG.debug("<== RangerServicePoliciesCache.getServicePolicies(" + serviceName + ", " + serviceId + ", " + lastKnownVersion + ", " + needsBackwardCompatibility + "): ret:[" + ret + "]");
 		}
 
 		return ret;
@@ -307,34 +308,28 @@ public class RangerServicePoliciesCache {
 						final List<RangerPolicy> policies = servicePolicies.getPolicies() == null ? new ArrayList<>() : servicePolicies.getPolicies();
 						final List<RangerPolicy> newPolicies = RangerPolicyDeltaUtil.applyDeltas(policies, servicePoliciesFromDb.getPolicyDeltas(), servicePolicies.getServiceDef().getName());
 
-						boolean isSanityCheckPassed = checkAndLoadCompleteSetOfPolicies(serviceName, serviceStore, newPolicies);
+						servicePolicies.setPolicies(newPolicies);
 
-						if (!isSanityCheckPassed) {
-							isCacheReloadedByDQEvent = true;
+						checkCacheSanity(serviceName, serviceStore, false);
+
+						// Rebuild tag-policies from original tag-policies and deltas
+						if (servicePoliciesFromDb.getTagPolicies() != null) {
+							String tagServiceName = servicePoliciesFromDb.getTagPolicies().getServiceName();
+							if (LOG.isDebugEnabled()) {
+								LOG.debug("This service has associated tag service:[" + tagServiceName + "]. Will compute tagPolicies from corresponding policy-deltas");
+							}
+
+							final List<RangerPolicy> tagPolicies = (servicePolicies.getTagPolicies() == null || CollectionUtils.isEmpty(servicePolicies.getTagPolicies().getPolicies())) ? new ArrayList<>() : servicePolicies.getTagPolicies().getPolicies();
+							final List<RangerPolicy> newTagPolicies = RangerPolicyDeltaUtil.applyDeltas(tagPolicies, servicePoliciesFromDb.getPolicyDeltas(), servicePoliciesFromDb.getTagPolicies().getServiceDef().getName());
+
+							servicePolicies.getTagPolicies().setPolicies(newTagPolicies);
+							servicePolicies.getTagPolicies().setPolicyVersion(servicePoliciesFromDb.getTagPolicies().getPolicyVersion());
+
+							checkCacheSanity(servicePoliciesFromDb.getTagPolicies().getServiceName(), serviceStore, true);
+
 						} else {
-							servicePolicies.setPolicies(newPolicies);
-
-							// Rebuild tag-policies from original tag-policies and deltas
-							if (servicePoliciesFromDb.getTagPolicies() != null) {
-								if (LOG.isDebugEnabled()) {
-									LOG.debug("This service has associated tag service. Will compute tagPolicies from corresponding policy-deltas");
-								}
-
-								final List<RangerPolicy> tagPolicies = (servicePolicies.getTagPolicies() == null || CollectionUtils.isEmpty(servicePolicies.getTagPolicies().getPolicies())) ? new ArrayList<>() : servicePolicies.getTagPolicies().getPolicies();
-								final List<RangerPolicy> newTagPolicies = RangerPolicyDeltaUtil.applyDeltas(tagPolicies, servicePoliciesFromDb.getPolicyDeltas(), servicePoliciesFromDb.getTagPolicies().getServiceDef().getName());
-
-								isSanityCheckPassed = checkAndLoadCompleteSetOfPolicies(serviceName, servicePoliciesFromDb.getTagPolicies().getServiceName(), serviceStore, newTagPolicies);
-
-								if (!isSanityCheckPassed) {
-									isCacheReloadedByDQEvent = true;
-								} else {
-									servicePolicies.getTagPolicies().setPolicies(newTagPolicies);
-								}
-
-							} else {
-								if (LOG.isDebugEnabled()) {
-									LOG.debug("This service has no associated tag service");
-								}
+							if (LOG.isDebugEnabled()) {
+								LOG.debug("This service has no associated tag service");
 							}
 						}
 					}
@@ -361,37 +356,15 @@ public class RangerServicePoliciesCache {
 			return isCacheReloadedByDQEvent;
 		}
 
-		private boolean checkAndLoadCompleteSetOfPolicies(String serviceName, ServiceStore serviceStore, List<RangerPolicy> policiesFromIncrementalComputation) {
-			boolean ret = checkCacheSanity(serviceName, serviceStore, policiesFromIncrementalComputation);
+		private void checkCacheSanity(String serviceName, ServiceStore serviceStore, boolean isTagService) {
+			final boolean result;
+			Long dbPolicyVersion = serviceStore.getServicePolicyVersion(serviceName);
+			Long cachedPolicyVersion = isTagService ? servicePolicies.getTagPolicies().getPolicyVersion() : servicePolicies.getPolicyVersion();
 
-			if (!ret) {
-				loadCompleteSetOfPolicies(serviceName, serviceStore);
-			}
+			result = Objects.equals(dbPolicyVersion, cachedPolicyVersion);
 
-			return ret;
-		}
-
-		private boolean checkAndLoadCompleteSetOfPolicies(String serviceName, String tagServiceName, ServiceStore serviceStore, List<RangerPolicy> policiesFromIncrementalComputation) {
-			boolean ret = checkCacheSanity(tagServiceName, serviceStore, policiesFromIncrementalComputation);
-
-			if (!ret) {
-				loadCompleteSetOfPolicies(serviceName, serviceStore);
-			}
-
-			return ret;
-		}
-
-		private boolean checkCacheSanity(String serviceName, ServiceStore serviceStore, List<RangerPolicy> policiesFromIncrementalComputation) {
-			return serviceStore.getPoliciesCount(serviceName) == (CollectionUtils.isEmpty(policiesFromIncrementalComputation) ? 0 : policiesFromIncrementalComputation.size());
-		}
-
-		private void loadCompleteSetOfPolicies(String serviceName, ServiceStore serviceStore) {
-			LOG.warn("Something went wrong doing incremental policies!! Loading all policies!!");
-			try {
-				servicePolicies = serviceStore.getServicePolicies(serviceName, -1L);
-				pruneUnusedAttributes();
-			} catch (Exception ex) {
-				LOG.warn("Could not get policies from database");
+			if (!result) {
+				LOG.info("checkCacheSanity(serviceName=" + serviceName + "): policy cache has a different version than one in the database. However, changes from " + cachedPolicyVersion + " to " + dbPolicyVersion + " will be downloaded in the next download. policyVersionInDB=" + dbPolicyVersion + ", policyVersionInCache=" + cachedPolicyVersion);
 			}
 		}
 

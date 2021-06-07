@@ -47,6 +47,7 @@ public class RangerPluginConfig extends RangerConfiguration {
     private final boolean                   useForwardedIPAddress;
     private final String[]                  trustedProxyAddresses;
     private final String                    propertyPrefix;
+    private       boolean                   isFallbackSupported;
     private       Set<String>               auditExcludedUsers  = Collections.emptySet();
     private       Set<String>               auditExcludedGroups = Collections.emptySet();
     private       Set<String>               auditExcludedRoles  = Collections.emptySet();
@@ -116,6 +117,24 @@ public class RangerPluginConfig extends RangerConfiguration {
         LOG.info(policyEngineOptions);
     }
 
+    protected RangerPluginConfig(String serviceType, String serviceName, String appId, RangerPluginConfig sourcePluginConfig) {
+        super();
+
+        this.serviceType    = serviceType;
+        this.appId          = StringUtils.isEmpty(appId) ? serviceType : appId;
+        this.propertyPrefix = "ranger.plugin." + serviceType;
+        this.serviceName    = serviceName;
+
+        this.clusterName    = sourcePluginConfig.getClusterName();
+        this.clusterType    = sourcePluginConfig.getClusterType();
+        this.useForwardedIPAddress = sourcePluginConfig.isUseForwardedIPAddress();
+        this.trustedProxyAddresses = sourcePluginConfig.getTrustedProxyAddresses();
+        this.isFallbackSupported   = sourcePluginConfig.getIsFallbackSupported();
+
+        this.policyEngineOptions = sourcePluginConfig.getPolicyEngineOptions();
+
+    }
+
     public String getServiceType() {
         return serviceType;
     }
@@ -146,6 +165,14 @@ public class RangerPluginConfig extends RangerConfiguration {
 
     public String getPropertyPrefix() {
         return propertyPrefix;
+    }
+
+    public boolean getIsFallbackSupported() {
+        return isFallbackSupported;
+    }
+
+    public void setIsFallbackSupported(boolean isFallbackSupported) {
+        this.isFallbackSupported = isFallbackSupported;
     }
 
     public RangerPolicyEngineOptions getPolicyEngineOptions() {

@@ -134,6 +134,7 @@ public class XXPolicyChangeLogDao extends BaseDao<XXPolicyChangeLog> {
 
                 Long    logRecordId      = (Long) log[POLICY_CHANGE_LOG_RECORD_ID_COLUMN_NUMBER];
                 Integer policyChangeType = (Integer) log[POLICY_CHANGE_LOG_RECORD_CHANGE_TYPE_COLUMN_NUMBER];
+                Long    policiesVersion  = (Long) log[POLICY_CHANGE_LOG_RECORD_POLICY_VERSION_COLUMN_NUMBER];
                 String  serviceType      = (String) log[POLICY_CHANGE_LOG_RECORD_SERVICE_TYPE_COLUMN_NUMBER];
                 Long    policyId         = (Long) log[POLICY_CHANGE_LOG_RECORD_POLICY_ID_COLUMN_NUMBER];
 
@@ -145,30 +146,27 @@ public class XXPolicyChangeLogDao extends BaseDao<XXPolicyChangeLog> {
                         } catch (Exception e) {
                             LOG.error("Cannot read policy:[" + policyId + "]. Should not have come here!! Offending log-record-id:[" + logRecordId + "] and returning...", e);
                             ret.clear();
-                            ret.add(new RangerPolicyDelta(logRecordId, RangerPolicyDelta.CHANGE_TYPE_LOG_ERROR, null));
+                            ret.add(new RangerPolicyDelta(logRecordId, RangerPolicyDelta.CHANGE_TYPE_LOG_ERROR, null, null));
                             break;
                         }
                     } else {
-                        if (LOG.isDebugEnabled()) {
-                            LOG.debug("Policy:[" + policyId + "] not found - log-record - id:[" + logRecordId + "], PolicyChangeType:[" + policyChangeType + "]");
+                        if (policyChangeType == RangerPolicyDelta.CHANGE_TYPE_POLICY_CREATE || policyChangeType == RangerPolicyDelta.CHANGE_TYPE_POLICY_UPDATE) {
+                            LOG.warn((policyChangeType == RangerPolicyDelta.CHANGE_TYPE_POLICY_CREATE ? "POLICY_CREATE" : "POLICY_UPDATE") + " type change for policy-id:[" + policyId + "], log-id:[" + logRecordId + "] was not found.. probably already deleted");
+                            // Create a placeholder delta with a dummy policy as the created/updated policy cannot be found - If there is a subsequent POLICY_DELETE, this delta will be cleaned-up in ServiceDBStore.compressDeltas()
                         }
-
-                        // Create a dummy policy as the policy cannot be found - probably already deleted
+                        // Create a placeholder delta with a dummy policy
                         policy = new RangerPolicy();
                         policy.setId(policyId);
-                        policy.setVersion((Long) log[POLICY_CHANGE_LOG_RECORD_POLICY_VERSION_COLUMN_NUMBER]);
+                        policy.setServiceType(serviceType);
                         policy.setPolicyType((Integer) log[POLICY_CHANGE_LOG_RECORD_POLICY_TYPE_COLUMN_NUMBER]);
                         policy.setZoneName((String) log[POLICY_CHANGE_LOG_RECORD_ZONE_NAME_COLUMN_NUMBER]);
                     }
-                    policy.setServiceType(serviceType);
 
-                    ret.add(new RangerPolicyDelta(logRecordId, policyChangeType, policy));
+                    ret.add(new RangerPolicyDelta(logRecordId, policyChangeType, policiesVersion, policy));
                 } else {
-                    if (LOG.isDebugEnabled()) {
-                        LOG.debug("policyId is null! log-record-id:[" + logRecordId + ", service-type:[" + log[POLICY_CHANGE_LOG_RECORD_SERVICE_TYPE_COLUMN_NUMBER] + "], policy-change-type:[" + log[POLICY_CHANGE_LOG_RECORD_CHANGE_TYPE_COLUMN_NUMBER] + "]");
-                    }
+                    LOG.info("delta-reset-event: log-record-id=" + logRecordId + "; service-type=" + serviceType + "; policy-change-type=" + policyChangeType + ". Discarding " + ret.size() + " deltas");
                     ret.clear();
-                    ret.add(new RangerPolicyDelta(logRecordId, policyChangeType, null));
+                    ret.add(new RangerPolicyDelta(logRecordId, policyChangeType, null, null));
                     break;
                 }
             }

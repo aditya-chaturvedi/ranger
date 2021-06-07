@@ -127,7 +127,6 @@ public class PublicAPIsv2 {
 
 	@GET
 	@Path("/api/servicedef/{id}")
-	@PreAuthorize("hasRole('ROLE_SYS_ADMIN')")
 	@Produces({ "application/json", "application/xml" })
 	public RangerServiceDef getServiceDef(@PathParam("id") Long id) {
 		return serviceREST.getServiceDef(id);
@@ -135,7 +134,6 @@ public class PublicAPIsv2 {
 
 	@GET
 	@Path("/api/servicedef/name/{name}")
-	@PreAuthorize("hasRole('ROLE_SYS_ADMIN')")
 	@Produces({ "application/json", "application/xml" })
 	public RangerServiceDef getServiceDefByName(@PathParam("name") String name) {
 		return serviceREST.getServiceDefByName(name);
@@ -143,7 +141,6 @@ public class PublicAPIsv2 {
 
 	@GET
 	@Path("/api/servicedef/")
-	@PreAuthorize("hasRole('ROLE_SYS_ADMIN')")
 	@Produces({ "application/json", "application/xml" })
 	public List<RangerServiceDef> searchServiceDefs(@Context HttpServletRequest request) {
 		return serviceREST.getServiceDefs(request).getServiceDefs();
@@ -551,6 +548,25 @@ public class PublicAPIsv2 {
 
 		if (logger.isDebugEnabled()) {
 			logger.debug("<== PublicAPIsv2.deleteTagDeltas(" + olderThan + ")");
+		}
+	}
+
+	@DELETE
+	@Path("/api/server/purgepolicies/{serviceName}")
+	@PreAuthorize("hasRole('ROLE_SYS_ADMIN')")
+	public void purgeEmptyPolicies(@PathParam("serviceName") String serviceName, @Context HttpServletRequest request) {
+		if (logger.isDebugEnabled()) {
+			logger.debug("==> PublicAPIsv2.purgeEmptyPolicies(" + serviceName + ")");
+		}
+
+		if (serviceName == null) {
+			throw restErrorUtil.createRESTException(HttpServletResponse.SC_BAD_REQUEST , "Invalid service name", true);
+		}
+
+		serviceREST.purgeEmptyPolicies(serviceName, request);
+
+		if (logger.isDebugEnabled()) {
+			logger.debug("<== PublicAPIsv2.purgeEmptyPolicies(" + serviceName + ")");
 		}
 	}
 

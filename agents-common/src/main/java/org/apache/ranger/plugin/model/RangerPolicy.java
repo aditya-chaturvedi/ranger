@@ -45,6 +45,7 @@ public class RangerPolicy extends RangerBaseModelObject implements java.io.Seria
 	public static final int POLICY_TYPE_ACCESS    = 0;
 	public static final int POLICY_TYPE_DATAMASK  = 1;
 	public static final int POLICY_TYPE_ROWFILTER = 2;
+	public static final int POLICY_TYPE_AUDIT     = 3;
 
 	public static final int[] POLICY_TYPES = new int[] {
 			POLICY_TYPE_ACCESS,
@@ -154,17 +155,18 @@ public class RangerPolicy extends RangerBaseModelObject implements java.io.Seria
 		setResourceSignature(other.getResourceSignature());
 		setIsAuditEnabled(other.getIsAuditEnabled());
 		setResources(other.getResources());
+		setConditions(other.getConditions());
 		setPolicyItems(other.getPolicyItems());
 		setDenyPolicyItems(other.getDenyPolicyItems());
 		setAllowExceptions(other.getAllowExceptions());
 		setDenyExceptions(other.getDenyExceptions());
 		setDataMaskPolicyItems(other.getDataMaskPolicyItems());
 		setRowFilterPolicyItems(other.getRowFilterPolicyItems());
+		setServiceType(other.getServiceType());
 		setOptions(other.getOptions());
 		setValiditySchedules(other.getValiditySchedules());
 		setPolicyLabels(other.getPolicyLabels());
 		setZoneName(other.getZoneName());
-		setConditions(other.getConditions());
 		setIsDenyAllElse(other.getIsDenyAllElse());
 	}
 
@@ -1586,8 +1588,6 @@ public class RangerPolicy extends RangerBaseModelObject implements java.io.Seria
 
 		@Override
 		public boolean equals(Object obj) {
-			if(! super.equals(obj))
-				return false;
 			if (this == obj)
 				return true;
 			if (obj == null)
@@ -1669,8 +1669,6 @@ public class RangerPolicy extends RangerBaseModelObject implements java.io.Seria
 
 		@Override
 		public boolean equals(Object obj) {
-			if(! super.equals(obj))
-				return false;
 			if (this == obj)
 				return true;
 			if (obj == null)

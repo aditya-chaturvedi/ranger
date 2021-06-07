@@ -25,6 +25,8 @@ import org.apache.ranger.audit.model.AuthzAuditEvent;
 
 import com.google.gson.GsonBuilder;
 
+//import java.io.File;
+import java.io.File;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -35,7 +37,6 @@ public abstract class BaseAuditHandler implements AuditHandler {
 	private static final Log LOG = LogFactory.getLog(BaseAuditHandler.class);
 
 	static final String AUDIT_LOG_FAILURE_REPORT_MIN_INTERVAL_PROP = "xasecure.audit.log.failure.report.min.interval.ms";
-	protected static final String AUDIT_DB_CREDENTIAL_PROVIDER_FILE = "xasecure.audit.credential.provider.file";
 
 	public static final String RANGER_POLICYMGR_CLIENT_KEY_FILE                  = "xasecure.policymgr.clientssl.keystore";
 	public static final String RANGER_POLICYMGR_CLIENT_KEY_FILE_TYPE             = "xasecure.policymgr.clientssl.keystore.type";
@@ -191,6 +192,11 @@ public abstract class BaseAuditHandler implements AuditHandler {
 		}
 		return log(eventList);
 	}
+
+   @Override
+	public boolean logFile(File file) {
+		return logFile(file);
+     }
 
 	public String getParentPath() {
 		return parentPath;

@@ -267,6 +267,8 @@ define(function(require) {
                 editValidityPeriod              : ' Edit Validity Period',
                 totalUsersSynced                : 'Total number of users synced',
                 totalGroupsSynced               : 'Total number of groups synced',
+                totalUsersDeleted               : 'Total number of users marked for delete',
+                totalGroupsDeleted              : 'Total number of groups marked for delete',
                 addPolicyCondition              : 'Add Policy Condition',
                 editPolicyCondition             : 'Edit Policy Condition',
                 agentHost	                    :'Agent Host Name',
@@ -284,7 +286,10 @@ define(function(require) {
                 clientIP                        : 'Client IP',
                 eventCount                      : 'Event Count',
                 tags                            : 'Tags',
-                permission                      : 'Permission'
+                permission                      : 'Permission',
+                override                        : 'Override',
+                normal                          : 'Normal',
+                auditId                         : 'Audit ID'
 
 			},
 			btn : {
@@ -358,6 +363,7 @@ define(function(require) {
                 serviceTypeMsg              :'Select type of service.',
                 startDate                   :'Set start date.',
                 userMsg                     :'Name of User.',
+                roleMsg                     :'Name of Role.',
                 application                 :'Application.',
                 tagsMsg                     :'Tag Name.',
                 endDate                     :'Set end date.',
@@ -393,8 +399,10 @@ define(function(require) {
                 nifiResource                :'NiFi Resource Identifier.',
                 securityZone				:'Security Zone',
                 zoneCreate					:'Create Zone',
-                zoneEdit					:'Zone Edit'
-                        },
+                zoneEdit					:'Zone Edit',
+                bucket                      :'Name of the S3 bucket.',
+                auditFilter                 :'Audit Filter'
+            },
 			msg : {
 				deletePolicyValidationMsg : 'Policy does not have any settings for the specific resource. Policy will be deleted. Press [Ok] to continue. Press [Cancel] to edit the policy.',
 				areYouSureWantToDelete	  : 'Are you sure want to delete ?',
@@ -516,7 +524,7 @@ define(function(require) {
 				newPasswordError       :'Invalid Password. Minimum 8 characters with min one alphabet and one numeric.',
 				emailIdError           : 'Please enter valid email address.',
 				enterValidName         : 'Please enter valid name.',
-				passwordError          :'Password should be minimum 8 characters with min one alphabet and one numeric.',
+				passwordError          :'Password should be minimum 8 characters with min one alphabet and one numeric. For FIPS environment password should be minimum 14 characters with min one alphabet and one numeric.',
 				userNameValidationMsg  :'1. User name should be start with alphabet / numeric / underscore / non-us characters.<br> 2. Allowed special character ,._\-+/@= and space. <br>3. Name length should be greater than one.',
 				groupNameValidationMsg :'1. Group name should be start with alphabet / numeric / underscore / non-us characters.<br> 2. Allowed special character ,._\-+/@= and space. <br>3. Name length should be greater than one.',
                 firstNameValidationMsg :'1. First name should be start with alphabet / numeric / underscore / non-us characters.<br> 2. Allowed special character ._-@ and space. <br>3. Name length should be greater than one.',
